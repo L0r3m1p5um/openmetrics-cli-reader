@@ -175,50 +175,68 @@ enum MetricFamilyMetadata {
 fn parse_metric_family_metadata<'a, E: ParseError<Span<'a>>>(
     i: Span<'a>,
 ) -> IResult<Span<'a>, (Span<'a>, MetricFamilyMetadata), E> {
-    alt((
-        preceded(tuple((tag("TYPE"), space1)), parse_type_metadata::<E>),
-        preceded(
-            tuple((tag("UNIT"), space1)),
-            tuple((
-                take_until1(" "),
-                delimited(
-                    space0,
-                    map(not_line_ending, {
-                        |unit: Span<'a>| MetricFamilyMetadata::Unit(unit.to_string())
-                    }),
-                    line_ending,
-                ),
-            )),
-        ),
-        preceded(
-            tuple((tag("HELP"), space1)),
-            tuple((
-                take_until1(" "),
-                delimited(
-                    space0,
-                    map(not_line_ending, {
-                        |help: Span<'a>| MetricFamilyMetadata::Help(help.to_string())
-                    }),
-                    line_ending,
-                ),
-            )),
-        ),
-    ))(i)
+    preceded(
+        tuple((tag("#"), space1)),
+        alt((
+            parse_type_metadata::<E>,
+            parse_unit_metadata::<E>,
+            parse_help_metadata::<E>,
+        )),
+    )(i)
+}
+
+fn parse_help_metadata<'a, E: ParseError<Span<'a>>>(
+    i: Span<'a>,
+) -> IResult<Span<'a>, (Span<'a>, MetricFamilyMetadata), E> {
+    preceded(
+        tuple((tag("HELP"), space1)),
+        tuple((
+            take_until1(" "),
+            delimited(
+                space0,
+                map(not_line_ending, {
+                    |help: Span<'a>| MetricFamilyMetadata::Help(help.to_string())
+                }),
+                line_ending,
+            ),
+        )),
+    )(i)
+}
+
+fn parse_unit_metadata<'a, E: ParseError<Span<'a>>>(
+    i: Span<'a>,
+) -> IResult<Span<'a>, (Span<'a>, MetricFamilyMetadata), E> {
+    preceded(
+        tuple((tag("UNIT"), space1)),
+        tuple((
+            take_until1(" "),
+            delimited(
+                space0,
+                map(not_line_ending, {
+                    |unit: Span<'a>| MetricFamilyMetadata::Unit(unit.to_string())
+                }),
+                line_ending,
+            ),
+        )),
+    )(i)
 }
 
 fn parse_type_metadata<'a, E: ParseError<Span<'a>>>(
     i: Span<'a>,
 ) -> IResult<Span<'a>, (Span<'a>, MetricFamilyMetadata), E> {
-    tuple((
-        take_until1(" "),
-        delimited(
-            space0,
-            map(parse_metrictype::<E>, {
-                |mtype| MetricFamilyMetadata::MetricType(mtype)
-            }),
-            line_ending,
-        ),
-    ))(i)
+    preceded(
+        tuple((tag("TYPE"), space1)),
+        tuple((
+            take_until1(" "),
+            delimited(
+                space0,
+                map(parse_metrictype::<E>, {
+                    |mtype| MetricFamilyMetadata::MetricType(mtype)
+                }),
+                line_ending,
+            ),
+        )),
+    )(i)
 }
 
 #[cfg(test)]
@@ -275,7 +293,7 @@ mod test {
 
     #[test]
     fn parse_type_metadata_test() {
-        let src = "TYPE foo_seconds counter\n";
+        let src = "# TYPE foo_seconds counter\n";
         let (name, metric_type) =
             final_parser(parse_metric_family_metadata::<ErrorTree<Span>>)(src.into())
                 .or_else(|e| {
@@ -292,7 +310,7 @@ mod test {
 
     #[test]
     fn parse_type_metadata_test_without_label() {
-        let src = "foo_seconds counter\n";
+        let src = "TYPE foo_seconds counter\n";
         let (name, metric_type) = final_parser(parse_type_metadata::<ErrorTree<Span>>)(src.into())
             .or_else(|e| {
                 render_error(src, e);
@@ -309,7 +327,7 @@ mod test {
     #[test]
     fn parse_unit_metadata_test() {
         let (_, (name, metric_type)) =
-            parse_metric_family_metadata::<ErrorTree<Span>>("UNIT foo_seconds seconds\n".into())
+            parse_metric_family_metadata::<ErrorTree<Span>>("# UNIT foo_seconds seconds\n".into())
                 .unwrap();
         assert_eq!(*name.fragment(), "foo_seconds");
         assert_eq!(
@@ -320,7 +338,7 @@ mod test {
 
     #[test]
     fn parse_help_metadata_test() {
-        let src = "HELP foo_seconds help text\n";
+        let src = "# HELP foo_seconds help text\n";
         let (name, metric_type) =
             final_parser(parse_metric_family_metadata::<ErrorTree<Span>>)(src.into())
                 .or_else(|e| {
