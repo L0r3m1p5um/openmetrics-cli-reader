@@ -4,15 +4,18 @@ use chrono::{DateTime, Utc};
 use miette::GraphicalReportHandler;
 use nom::{
     branch::alt,
-    bytes::complete::{tag, take_until1},
+    bytes::streaming::{tag, take_until1},
     character::{
-        complete::{alpha1, alphanumeric1, line_ending, multispace0, not_line_ending, space1},
         streaming::space0,
+        streaming::{
+            alpha1, alphanumeric1, line_ending, multispace0, multispace1, not_line_ending, space1,
+        },
     },
-    combinator::{map, value},
-    error::ParseError,
+    combinator::{map, map_res, value},
+    error::{ErrorKind, ParseError},
     multi::separated_list0,
-    sequence::{delimited, preceded, tuple},
+    number::streaming::double,
+    sequence::{delimited, preceded, terminated, tuple},
     IResult,
 };
 use nom_locate::LocatedSpan;
@@ -315,6 +318,39 @@ fn parse_type_metadata<'a, E: ParseError<Span<'a>>>(
     )(i)
 }
 
+// fn parse_gauge_metric<'a, E: ParseError<Span<'a>>>(
+//     i: Span<'a>,
+//     name: Option<&str>,
+// ) -> IResult<Span<'a>, (Span<'a>, MetricFamilyMetadata), E> {
+//     // let name_match: Box<
+//     //     dyn Fn(
+//     //         LocatedSpan<&'a str>,
+//     //     ) -> Result<(LocatedSpan<&'a str>, LocatedSpan<&'a str>), nom::Err<E>>,
+//     // > = match name {
+//     //     Some(name) => Box::new(tag(name)),
+//     //     None => Box::new(take_until1("{")),
+//     // };
+
+//     alt((
+//         tuple((take_until1("{"), parse_labelset)),
+//         tuple(take_until1(" ")),
+//     ))(i)
+// }
+
+fn parse_int_or_float<'a, E: ParseError<Span<'a>>>(
+    i: Span<'a>,
+) -> IResult<Span<'a>, IntOrFloat, E> {
+    alt((
+        map(
+            terminated(nom::character::streaming::i64, multispace1),
+            |value| IntOrFloat::Int(value),
+        ),
+        map(terminated(double, multispace1), |value| {
+            IntOrFloat::Float(value)
+        }),
+    ))(i)
+}
+
 #[cfg(test)]
 mod test {
 
@@ -504,7 +540,7 @@ mod test {
         let (_, (one, two)) = tuple((
             alphanumeric1::<Span, ErrorTree<Span>>,
             preceded(space0, alphanumeric1),
-        ))("one two".into())
+        ))("one two\n".into())
         .unwrap();
         assert_eq!(*one.fragment(), "one");
         assert_eq!(*two.fragment(), "two");
@@ -530,5 +566,35 @@ mod test {
         };
 
         assert_eq!(metric_family, expected);
+    }
+
+    #[test]
+    fn parse_int_to_int_or_float() {
+        let (_, value) = parse_int_or_float::<ErrorTree<Span>>("156\nA".into()).unwrap();
+        assert_eq!(value, IntOrFloat::Int(156))
+    }
+
+    #[test]
+    fn parse_negative_int_to_int_or_float() {
+        let (_, value) = parse_int_or_float::<ErrorTree<Span>>("-156\nA".into()).unwrap();
+        assert_eq!(value, IntOrFloat::Int(-156))
+    }
+
+    #[test]
+    fn parse_float_to_int_or_float() {
+        let (_, value) = parse_int_or_float::<ErrorTree<Span>>("1.5\nA".into()).unwrap();
+        assert_eq!(value, IntOrFloat::Float(1.5))
+    }
+
+    #[test]
+    fn parse_negative_float_to_int_or_float() {
+        let (_, value) = parse_int_or_float::<ErrorTree<Span>>("-1.5\nA".into()).unwrap();
+        assert_eq!(value, IntOrFloat::Float(1.5))
+    }
+
+    #[test]
+    fn parse_scientific_notation_to_int_or_float() {
+        let (_, value) = parse_int_or_float::<ErrorTree<Span>>("1.89e-7\nA".into()).unwrap();
+        assert_eq!(value, IntOrFloat::Float(0.000000189))
     }
 }
