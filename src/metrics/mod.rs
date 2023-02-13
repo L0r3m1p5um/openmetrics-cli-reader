@@ -1,31 +1,29 @@
+mod metric_types;
+
 use std::error::Error;
 
-use chrono::{DateTime, Utc};
+use metric_types::*;
 use miette::GraphicalReportHandler;
 use nom::{
     branch::alt,
-    bytes::streaming::{tag, take_until1},
+    bytes::{complete::is_a, streaming::tag},
     character::{
         streaming::space0,
         streaming::{
-            alpha1, alphanumeric1, line_ending, multispace0, multispace1, not_line_ending, space1,
+            alphanumeric1, line_ending, multispace0, multispace1, not_line_ending, space1,
         },
     },
-    combinator::{map, map_res, value},
-    error::{ErrorKind, ParseError},
+    combinator::{map, value},
+    error::ParseError,
     multi::separated_list0,
-    number::streaming::double,
     sequence::{delimited, preceded, terminated, tuple},
     IResult,
 };
 use nom_locate::LocatedSpan;
-use nom_supreme::{
-    error::{BaseErrorKind, ErrorTree, GenericErrorTree},
-    final_parser::Location,
-};
+use nom_supreme::error::{BaseErrorKind, ErrorTree, GenericErrorTree};
 use serde::Serialize;
 
-const METRIC_FAMILY_NAME_CHARS: &str = "abcdefghijklmnopqrstuvwxyz_";
+const METRIC_NAME_CHARS: &str = "abcdefghijklmnopqrstuvwxyz_";
 
 #[derive(Debug, Clone, Serialize)]
 pub struct MetricSet {
@@ -39,18 +37,6 @@ pub struct MetricFamily {
     unit: Option<String>,
     help: Option<String>,
     metrics: Vec<Metric>,
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-pub enum MetricType {
-    Unknown,
-    Gauge,
-    Counter,
-    StateSet,
-    Info,
-    Histogram,
-    GagueHistogram,
-    Summary,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -75,13 +61,6 @@ pub enum MetricPoint {
     // InfoValue,
     // SummaryValue,
 }
-
-#[derive(Debug, Clone, Serialize, PartialEq)]
-enum IntOrFloat {
-    Int(i64),
-    Float(f64),
-}
-
 type Span<'a> = LocatedSpan<&'a str>;
 
 #[derive(thiserror::Error, Debug, miette::Diagnostic)]
@@ -149,11 +128,14 @@ fn parse_label<'a, E: ParseError<Span<'a>>>(i: Span<'a>) -> IResult<Span<'a>, La
 }
 
 fn parse_labelset<'a, E: ParseError<Span<'a>>>(i: Span<'a>) -> IResult<Span<'a>, Vec<Label>, E> {
-    delimited(
-        tag("{"),
-        separated_list0(tag(","), parse_label::<E>),
-        tag("}"),
-    )(i)
+    alt((
+        delimited(
+            tag("{"),
+            separated_list0(tag(","), parse_label::<E>),
+            tag("}"),
+        ),
+        map(tag(" "), |_| vec![]),
+    ))(i)
 }
 
 fn parse_metric_family<'a, E: ParseError<Span<'a>>>(
@@ -186,6 +168,14 @@ fn parse_metric_family<'a, E: ParseError<Span<'a>>>(
         }
     }
 
+    let mut metrics = vec![];
+    while let Ok((input, (line_name, metric))) =
+        parse_metric::<ErrorTree<Span<'a>>>(i, metric_family_name, metric_family_type)
+    {
+        i = input;
+        metrics.push(metric);
+    }
+
     match metric_family_name {
         Some(name) => Ok((
             i,
@@ -194,7 +184,7 @@ fn parse_metric_family<'a, E: ParseError<Span<'a>>>(
                 metric_type: metric_family_type,
                 unit: metric_family_unit,
                 help: metric_family_help,
-                metrics: vec![],
+                metrics,
             },
         )),
         None => Err(nom::Err::Failure(E::from_error_kind(
@@ -247,7 +237,7 @@ fn parse_help_metadata<'a, E: ParseError<Span<'a>>>(
         ) -> Result<(LocatedSpan<&'a str>, LocatedSpan<&'a str>), nom::Err<E>>,
     > = match name {
         Some(name) => Box::new(tag(name)),
-        None => Box::new(take_until1(" ")),
+        None => Box::new(is_a(METRIC_NAME_CHARS)),
     };
     preceded(
         tuple((tag("HELP"), space1)),
@@ -274,7 +264,7 @@ fn parse_unit_metadata<'a, E: ParseError<Span<'a>>>(
         ) -> Result<(LocatedSpan<&'a str>, LocatedSpan<&'a str>), nom::Err<E>>,
     > = match name {
         Some(name) => Box::new(tag(name)),
-        None => Box::new(take_until1(" ")),
+        None => Box::new(is_a(METRIC_NAME_CHARS)),
     };
     preceded(
         tuple((tag("UNIT"), space1)),
@@ -301,7 +291,7 @@ fn parse_type_metadata<'a, E: ParseError<Span<'a>>>(
         ) -> Result<(LocatedSpan<&'a str>, LocatedSpan<&'a str>), nom::Err<E>>,
     > = match name {
         Some(name) => Box::new(tag(name)),
-        None => Box::new(take_until1(" ")),
+        None => Box::new(is_a(METRIC_NAME_CHARS)),
     };
     preceded(
         tuple((tag("TYPE"), space1)),
@@ -318,42 +308,25 @@ fn parse_type_metadata<'a, E: ParseError<Span<'a>>>(
     )(i)
 }
 
-// fn parse_gauge_metric<'a, E: ParseError<Span<'a>>>(
-//     i: Span<'a>,
-//     name: Option<&str>,
-// ) -> IResult<Span<'a>, (Span<'a>, MetricFamilyMetadata), E> {
-//     // let name_match: Box<
-//     //     dyn Fn(
-//     //         LocatedSpan<&'a str>,
-//     //     ) -> Result<(LocatedSpan<&'a str>, LocatedSpan<&'a str>), nom::Err<E>>,
-//     // > = match name {
-//     //     Some(name) => Box::new(tag(name)),
-//     //     None => Box::new(take_until1("{")),
-//     // };
-
-//     alt((
-//         tuple((take_until1("{"), parse_labelset)),
-//         tuple(take_until1(" ")),
-//     ))(i)
-// }
-
-fn parse_int_or_float<'a, E: ParseError<Span<'a>>>(
+fn parse_metric<'a, E: ParseError<Span<'a>>>(
     i: Span<'a>,
-) -> IResult<Span<'a>, IntOrFloat, E> {
-    alt((
-        map(
-            terminated(nom::character::streaming::i64, multispace1),
-            |value| IntOrFloat::Int(value),
-        ),
-        map(terminated(double, multispace1), |value| {
-            IntOrFloat::Float(value)
-        }),
-    ))(i)
+    name: Option<&str>,
+    metric_type: MetricType,
+) -> IResult<Span<'a>, (Option<Span<'a>>, Metric), E> {
+    let parse_metric_with_type = match name {
+        Some(name) => match metric_type {
+            MetricType::Gauge => map(|it| parse_gauge_metric(it, name), |metric| (None, metric)),
+            mtype => unimplemented!("Parsing has not been implemented for metric type {mtype:?}"),
+        },
+        None => unimplemented!(),
+    };
+    terminated(parse_metric_with_type, multispace0)(i)
 }
 
 #[cfg(test)]
 mod test {
 
+    use nom::sequence::terminated;
     use nom_supreme::{error::ErrorTree, final_parser::final_parser};
 
     use super::*;
@@ -395,6 +368,12 @@ mod test {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn parse_empty_labelset_test() {
+        let (_, labelset) = parse_labelset::<ErrorTree<Span>>(" ".into()).unwrap();
+        assert_eq!(labelset, vec![])
     }
 
     #[test]
@@ -549,7 +528,7 @@ mod test {
     #[test]
     fn parse_metric_family_with_only_metadata() {
         let src =
-            "# TYPE foo_seconds counter\n# UNIT foo_seconds seconds\n# HELP foo_seconds help text\n";
+            "# TYPE foo_seconds gauge\n# UNIT foo_seconds seconds\n# HELP foo_seconds help text\n";
         let metric_family = final_parser(parse_metric_family::<ErrorTree<Span>>)(src.into())
             .or_else(|e| {
                 render_error(src, e);
@@ -559,7 +538,7 @@ mod test {
 
         let expected = MetricFamily {
             name: "foo_seconds".to_string(),
-            metric_type: MetricType::Counter,
+            metric_type: MetricType::Gauge,
             unit: Some("seconds".to_string()),
             help: Some("help text".to_string()),
             metrics: vec![],
@@ -569,32 +548,89 @@ mod test {
     }
 
     #[test]
-    fn parse_int_to_int_or_float() {
-        let (_, value) = parse_int_or_float::<ErrorTree<Span>>("156\nA".into()).unwrap();
-        assert_eq!(value, IntOrFloat::Int(156))
+    fn parse_metric_family_with_metric() {
+        let src = "# TYPE foo_seconds gauge\nfoo_seconds{label=\"value\"} 150\n# EOF";
+        let metric_family = final_parser(terminated(
+            parse_metric_family::<ErrorTree<Span>>,
+            tag("# EOF"),
+        ))(src.into())
+        .or_else(|e| {
+            render_error(src, e);
+            Err(())
+        })
+        .unwrap();
+
+        let expected = MetricFamily {
+            name: "foo_seconds".to_string(),
+            metric_type: MetricType::Gauge,
+            unit: None,
+            help: None,
+            metrics: vec![Metric {
+                labels: vec![Label {
+                    name: "label".to_string(),
+                    value: "value".to_string(),
+                }],
+                metric_points: vec![MetricPoint::GaugeValue(IntOrFloat::Int(150))],
+            }],
+        };
+
+        assert_eq!(metric_family, expected);
     }
 
     #[test]
-    fn parse_negative_int_to_int_or_float() {
-        let (_, value) = parse_int_or_float::<ErrorTree<Span>>("-156\nA".into()).unwrap();
-        assert_eq!(value, IntOrFloat::Int(-156))
+    fn parse_metric_family_with_multiple_metrics() {
+        let src = "# TYPE foo_seconds gauge\nfoo_seconds{label=\"value1\"} 150\nfoo_seconds{label=\"value2\"} 100\n# EOF";
+        let metric_family = final_parser(terminated(
+            parse_metric_family::<ErrorTree<Span>>,
+            tag("# EOF"),
+        ))(src.into())
+        .or_else(|e| {
+            render_error(src, e);
+            Err(())
+        })
+        .unwrap();
+
+        let expected = MetricFamily {
+            name: "foo_seconds".to_string(),
+            metric_type: MetricType::Gauge,
+            unit: None,
+            help: None,
+            metrics: vec![
+                Metric {
+                    labels: vec![Label {
+                        name: "label".to_string(),
+                        value: "value1".to_string(),
+                    }],
+                    metric_points: vec![MetricPoint::GaugeValue(IntOrFloat::Int(150))],
+                },
+                Metric {
+                    labels: vec![Label {
+                        name: "label".to_string(),
+                        value: "value2".to_string(),
+                    }],
+                    metric_points: vec![MetricPoint::GaugeValue(IntOrFloat::Int(100))],
+                },
+            ],
+        };
+
+        assert_eq!(metric_family, expected);
     }
 
     #[test]
-    fn parse_float_to_int_or_float() {
-        let (_, value) = parse_int_or_float::<ErrorTree<Span>>("1.5\nA".into()).unwrap();
-        assert_eq!(value, IntOrFloat::Float(1.5))
-    }
-
-    #[test]
-    fn parse_negative_float_to_int_or_float() {
-        let (_, value) = parse_int_or_float::<ErrorTree<Span>>("-1.5\nA".into()).unwrap();
-        assert_eq!(value, IntOrFloat::Float(1.5))
-    }
-
-    #[test]
-    fn parse_scientific_notation_to_int_or_float() {
-        let (_, value) = parse_int_or_float::<ErrorTree<Span>>("1.89e-7\nA".into()).unwrap();
-        assert_eq!(value, IntOrFloat::Float(0.000000189))
+    fn parse_gauge_metric() {
+        let src = "foo_seconds{label=\"value\"} 99\n# EOF";
+        let (_, (_, metric)) =
+            parse_metric::<ErrorTree<Span>>(src.into(), Some("foo_seconds"), MetricType::Gauge)
+                .unwrap();
+        assert_eq!(
+            metric,
+            Metric {
+                labels: vec![Label {
+                    name: "label".to_string(),
+                    value: "value".to_string()
+                }],
+                metric_points: vec![MetricPoint::GaugeValue(IntOrFloat::Int(99))]
+            }
+        );
     }
 }
