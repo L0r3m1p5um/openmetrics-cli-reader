@@ -1,0 +1,4 @@
+# TYPE go_goroutines gauge
+# HELP go_goroutines Number of goroutines that currently exist.
+go_goroutines 69
+# EOF

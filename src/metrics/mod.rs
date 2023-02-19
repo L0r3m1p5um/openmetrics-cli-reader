@@ -53,16 +53,27 @@ pub struct Label {
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
-pub enum MetricPoint {
-    UnknownValue(IntOrFloat),
-    GaugeValue(IntOrFloat),
-    // CounterValue(CounterValue),
-    // HistogramValue,
-    // StateSetValue,
-    // InfoValue,
-    // SummaryValue,
+pub struct MetricPoint {
+    value: MetricValue,
+    timestamp: Option<f64>,
 }
-type Span<'a> = LocatedSpan<&'a str>;
+
+impl MetricPoint {
+    fn new(value: MetricValue, timestamp: Option<f64>) -> Self {
+        MetricPoint { value, timestamp }
+    }
+}
+
+impl From<MetricValue> for MetricPoint {
+    fn from(value: MetricValue) -> Self {
+        MetricPoint {
+            value,
+            timestamp: None,
+        }
+    }
+}
+
+pub type Span<'a> = LocatedSpan<&'a str>;
 
 #[derive(thiserror::Error, Debug, miette::Diagnostic)]
 #[error("bad input")]
@@ -76,7 +87,7 @@ struct BadInput {
     kind: BaseErrorKind<&'static str, Box<dyn std::error::Error + Send + Sync>>,
 }
 
-fn render_error(src_input: &str, e: ErrorTree<Span>) {
+pub fn render_error(src_input: &str, e: ErrorTree<Span>) {
     match e {
         GenericErrorTree::Base { location, kind } => {
             render_base_error(src_input, location, kind);
@@ -139,7 +150,7 @@ fn parse_labelset<'a, E: ParseError<Span<'a>>>(i: Span<'a>) -> IResult<Span<'a>,
     ))(i)
 }
 
-fn parse_metric_set<'a, E: ParseError<Span<'a>>>(i: Span<'a>) -> IResult<Span<'a>, MetricSet, E> {
+pub fn parse_metric_set<'a, E: ParseError<Span<'a>>>(i: Span<'a>) -> IResult<Span<'a>, MetricSet, E> {
     let mut metric_families = vec![];
     let mut i = i;
     while let Ok((input, (metric_family, eof))) = tuple((
@@ -149,7 +160,6 @@ fn parse_metric_set<'a, E: ParseError<Span<'a>>>(i: Span<'a>) -> IResult<Span<'a
     {
         metric_families.push(metric_family);
         i = input;
-        println!("Added metric family");
         if eof.is_some() {
             break;
         }
@@ -200,7 +210,6 @@ fn parse_metric_family<'a, E: ParseError<Span<'a>>>(
         i = input;
         metrics.push(metric);
     }
-    println!("Input: '{i}'");
 
     match metric_family_name {
         Some(name) => Ok((
@@ -339,11 +348,16 @@ fn parse_metric<'a, E: ParseError<Span<'a>>>(
     name: Option<&str>,
     metric_type: MetricType,
 ) -> IResult<Span<'a>, (Option<Span<'a>>, Metric), E> {
-    match name {
+    let mut i = i;
+    let mut metric_points = vec![];
+    let mut metric_labels: Option<Vec<Label>> = None;
+    let mut metric_name: Option<Span<'a>> = None;
+
+    while let Ok((i_, (name, (labels, metric_point)))) = match name {
         Some(name) => match metric_type {
             MetricType::Unknown => terminated(
                 map(
-                    |it| parse_unknown_metric_with_name(it, name),
+                    |it| parse_unknown_metric_with_name::<E>(it, name),
                     |metric| (None, metric),
                 ),
                 multispace0,
@@ -356,13 +370,48 @@ fn parse_metric<'a, E: ParseError<Span<'a>>>(
         },
         None => match metric_type {
             MetricType::Unknown => terminated(
-                map(parse_unknown_metric_without_name, |(name, metric)| {
-                    (Some(name), metric)
-                }),
+                map(
+                    parse_unknown_metric_without_name,
+                    |(name, labels, metric)| (Some(name), (labels, metric)),
+                ),
                 multispace0,
             )(i),
             _ => unimplemented!(),
         },
+    } {
+        match metric_labels {
+            Some(ref metric_labels) => {
+                if labels != *metric_labels {
+                    break;
+                }
+            }
+            None => metric_labels = Some(labels),
+        }
+        i = i_;
+        metric_points.push(metric_point);
+        metric_name = name;
+    }
+    let metric_labels = match metric_labels {
+        Some(labels) => labels,
+        None => vec![],
+    };
+
+    if metric_points.len() > 0 {
+        Ok((
+            i,
+            (
+                metric_name,
+                Metric {
+                    labels: metric_labels,
+                    metric_points,
+                },
+            ),
+        ))
+    } else {
+        Err(nom::Err::Error(E::from_error_kind(
+            i,
+            nom::error::ErrorKind::Fail,
+        )))
     }
 }
 
@@ -613,7 +662,10 @@ mod test {
                     name: "label".to_string(),
                     value: "value".to_string(),
                 }],
-                metric_points: vec![MetricPoint::GaugeValue(IntOrFloat::Int(150))],
+                metric_points: vec![MetricPoint {
+                    value: MetricValue::GaugeValue(IntOrFloat::Int(150)),
+                    timestamp: None,
+                }],
             }],
         };
 
@@ -643,7 +695,7 @@ mod test {
                     name: "label".to_string(),
                     value: "value".to_string(),
                 }],
-                metric_points: vec![MetricPoint::UnknownValue(IntOrFloat::Int(150))],
+                metric_points: vec![MetricValue::UnknownValue(IntOrFloat::Int(150)).into()],
             }],
         };
 
@@ -674,14 +726,14 @@ mod test {
                         name: "label".to_string(),
                         value: "value1".to_string(),
                     }],
-                    metric_points: vec![MetricPoint::GaugeValue(IntOrFloat::Int(150))],
+                    metric_points: vec![MetricValue::GaugeValue(IntOrFloat::Int(150)).into()],
                 },
                 Metric {
                     labels: vec![Label {
                         name: "label".to_string(),
                         value: "value2".to_string(),
                     }],
-                    metric_points: vec![MetricPoint::GaugeValue(IntOrFloat::Int(100))],
+                    metric_points: vec![MetricValue::GaugeValue(IntOrFloat::Int(100)).into()],
                 },
             ],
         };
@@ -702,7 +754,29 @@ mod test {
                     name: "label".to_string(),
                     value: "value".to_string()
                 }],
-                metric_points: vec![MetricPoint::GaugeValue(IntOrFloat::Int(99))]
+                metric_points: vec![MetricValue::GaugeValue(IntOrFloat::Int(99)).into()]
+            }
+        );
+    }
+
+    #[test]
+    fn parse_metric_with_multiple_metric_points() {
+        let src =
+            "foo_seconds{label=\"value\"} 99 123\nfoo_seconds{label=\"value\"} 100 456\n# EOF";
+        let (_, (_, metric)) =
+            parse_metric::<ErrorTree<Span>>(src.into(), Some("foo_seconds"), MetricType::Gauge)
+                .unwrap();
+        assert_eq!(
+            metric,
+            Metric {
+                labels: vec![Label {
+                    name: "label".to_string(),
+                    value: "value".to_string()
+                }],
+                metric_points: vec![
+                    MetricPoint::new(MetricValue::GaugeValue(IntOrFloat::Int(99)), Some(123.0)),
+                    MetricPoint::new(MetricValue::GaugeValue(IntOrFloat::Int(100)), Some(456.0))
+                ]
             }
         );
     }
@@ -720,7 +794,7 @@ mod test {
                     name: "label".to_string(),
                     value: "value".to_string()
                 }],
-                metric_points: vec![MetricPoint::UnknownValue(IntOrFloat::Int(99))]
+                metric_points: vec![MetricValue::UnknownValue(IntOrFloat::Int(99)).into()]
             }
         );
     }
@@ -738,7 +812,7 @@ mod test {
                     name: "label".to_string(),
                     value: "value".to_string()
                 }],
-                metric_points: vec![MetricPoint::UnknownValue(IntOrFloat::Int(99))]
+                metric_points: vec![MetricValue::UnknownValue(IntOrFloat::Int(99)).into()]
             }
         );
     }
@@ -763,7 +837,7 @@ mod test {
                     name: "label".to_string(),
                     value: "value".to_string(),
                 }],
-                metric_points: vec![MetricPoint::GaugeValue(IntOrFloat::Int(150))],
+                metric_points: vec![MetricValue::GaugeValue(IntOrFloat::Int(150)).into()],
             }],
         };
 
@@ -777,7 +851,7 @@ mod test {
                     name: "label".to_string(),
                     value: "value".to_string(),
                 }],
-                metric_points: vec![MetricPoint::GaugeValue(IntOrFloat::Int(50))],
+                metric_points: vec![MetricValue::GaugeValue(IntOrFloat::Int(50)).into()],
             }],
         };
 

@@ -1,3 +1,4 @@
+use chrono::{DateTime, Utc};
 use nom::{
     branch::alt,
     bytes::{
@@ -5,7 +6,7 @@ use nom::{
         streaming::{tag, take_until1},
     },
     character::streaming::{multispace1, one_of, space0, space1},
-    combinator::{map, not},
+    combinator::{map, not, opt},
     error::ParseError,
     number::streaming::double,
     sequence::{preceded, terminated, tuple},
@@ -13,7 +14,7 @@ use nom::{
 };
 use serde::Serialize;
 
-use super::{parse_labelset, Metric, MetricPoint, Span, METRIC_NAME_CHARS};
+use super::{parse_labelset, Label, Metric, MetricPoint, Span, METRIC_NAME_CHARS};
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 pub enum MetricType {
@@ -27,17 +28,34 @@ pub enum MetricType {
     Summary,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub enum MetricValue {
+    UnknownValue(IntOrFloat),
+    GaugeValue(IntOrFloat),
+    // CounterValue(CounterValue),
+    // HistogramValue,
+    // StateSetValue,
+    // InfoValue,
+    // SummaryValue,
+}
+
 pub fn parse_gauge_metric<'a, E: ParseError<Span<'a>>>(
     i: Span<'a>,
     name: &str,
-) -> IResult<Span<'a>, Metric, E> {
+) -> IResult<Span<'a>, (Vec<Label>, MetricPoint), E> {
     preceded(
         tag(name),
         map(
-            tuple((terminated(parse_labelset, space0), parse_int_or_float)),
-            |(labels, value)| Metric {
-                labels,
-                metric_points: vec![MetricPoint::GaugeValue(value)],
+            tuple((
+                terminated(parse_labelset, space0),
+                parse_int_or_float,
+                parse_timestamp,
+            )),
+            |(labels, value, timestamp)| {
+                (
+                    labels,
+                    MetricPoint::new(MetricValue::GaugeValue(value), timestamp),
+                )
             },
         ),
     )(i)
@@ -46,42 +64,44 @@ pub fn parse_gauge_metric<'a, E: ParseError<Span<'a>>>(
 pub fn parse_unknown_metric_with_name<'a, E: ParseError<Span<'a>>>(
     i: Span<'a>,
     name: &str,
-) -> IResult<Span<'a>, Metric, E> {
+) -> IResult<Span<'a>, (Vec<Label>, MetricPoint), E> {
     map(
         tuple((
             tag(name),
             terminated(parse_labelset, space0),
             parse_int_or_float,
+            parse_timestamp,
         )),
-        |(_, labels, value)| Metric {
-            labels,
-            metric_points: vec![MetricPoint::UnknownValue(value)],
+        |(_, labels, value, timestamp)| {
+            (
+                labels,
+                MetricPoint::new(MetricValue::UnknownValue(value), timestamp),
+            )
         },
     )(i)
 }
 
 pub fn parse_unknown_metric_without_name<'a, E: ParseError<Span<'a>>>(
     i: Span<'a>,
-) -> IResult<Span<'a>, (Span<'a>, Metric), E> {
+) -> IResult<Span<'a>, (Span<'a>, Vec<Label>, MetricPoint), E> {
     map(
         tuple((
             is_a(METRIC_NAME_CHARS),
             terminated(parse_labelset, space0),
             parse_int_or_float,
+            parse_timestamp,
         )),
-        |(name, labels, value)| {
+        |(name, labels, value, timestamp)| {
             (
                 name,
-                Metric {
-                    labels,
-                    metric_points: vec![MetricPoint::UnknownValue(value)],
-                },
+                labels,
+                MetricPoint::new(MetricValue::UnknownValue(value), timestamp),
             )
         },
     )(i)
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Copy, Clone, Serialize, PartialEq)]
 pub enum IntOrFloat {
     Int(i64),
     Float(f64),
@@ -97,6 +117,12 @@ fn parse_int_or_float<'a, E: ParseError<Span<'a>>>(
         ),
         map(double, |value| IntOrFloat::Float(value)),
     ))(i)
+}
+
+pub fn parse_timestamp<'a, E: ParseError<Span<'a>>>(
+    i: Span<'a>,
+) -> IResult<Span<'a>, Option<f64>, E> {
+    opt(preceded(tag(" "), double))(i)
 }
 
 #[cfg(test)]
@@ -144,10 +170,23 @@ mod test {
         let (_, metric) = parse_gauge_metric::<ErrorTree<Span>>(src.into(), "foo_seconds").unwrap();
         assert_eq!(
             metric,
-            Metric {
-                labels: vec![],
-                metric_points: vec![MetricPoint::GaugeValue(IntOrFloat::Int(100))]
-            }
+            (vec![], MetricValue::GaugeValue(IntOrFloat::Int(100)).into())
+        );
+    }
+
+    #[test]
+    fn parse_gauge_metric_with_timestamp() {
+        let src = "foo_seconds 100 1520879607.789\nt";
+        let (_, metric) = parse_gauge_metric::<ErrorTree<Span>>(src.into(), "foo_seconds").unwrap();
+        assert_eq!(
+            metric,
+            (
+                vec![],
+                MetricPoint::new(
+                    MetricValue::GaugeValue(IntOrFloat::Int(100)).into(),
+                    Some(1520879607.789)
+                )
+            )
         );
     }
 
@@ -157,10 +196,10 @@ mod test {
         let (_, metric) = parse_gauge_metric::<ErrorTree<Span>>(src.into(), "foo_seconds").unwrap();
         assert_eq!(
             metric,
-            Metric {
-                labels: vec![],
-                metric_points: vec![MetricPoint::GaugeValue(IntOrFloat::Float(100.5))]
-            }
+            (
+                vec![],
+                MetricValue::GaugeValue(IntOrFloat::Float(100.5)).into()
+            )
         );
     }
 
@@ -170,31 +209,32 @@ mod test {
         let (_, metric) = parse_gauge_metric::<ErrorTree<Span>>(src.into(), "foo_seconds").unwrap();
         assert_eq!(
             metric,
-            Metric {
-                labels: vec![Label {
+            (
+                vec![Label {
                     name: "label".to_string(),
                     value: "value".to_string()
                 }],
-                metric_points: vec![MetricPoint::GaugeValue(IntOrFloat::Int(100))]
-            }
+                MetricValue::GaugeValue(IntOrFloat::Int(100)).into()
+            )
         );
     }
 
     #[test]
     fn parse_unknown_metric_with_labels() {
         let src = "foo_seconds{label=\"value\"} 100\n";
-        let (_, (name, metric)) = parse_unknown_metric_without_name::<ErrorTree<Span>>(src.into()).unwrap();
+        let (_, (name, labels, metric)) =
+            parse_unknown_metric_without_name::<ErrorTree<Span>>(src.into()).unwrap();
+        assert_eq!(
+            labels,
+            vec![Label {
+                name: "label".to_string(),
+                value: "value".to_string()
+            }],
+        );
         assert_eq!(
             metric,
-            Metric {
-                labels: vec![Label {
-                    name: "label".to_string(),
-                    value: "value".to_string()
-                }],
-                metric_points: vec![MetricPoint::UnknownValue(IntOrFloat::Int(100))]
-            }
+            MetricValue::UnknownValue(IntOrFloat::Int(100)).into()
         );
         assert_eq!(name, "foo_seconds".into());
     }
-
 }

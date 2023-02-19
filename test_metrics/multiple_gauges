@@ -1,0 +1,23 @@
+# TYPE a_seconds gauge
+# HELP a_seconds seconds in a
+# UNIT a_seconds seconds
+a_seconds{label1="value1",label2="value2"} 1 123
+a_seconds{label1="value1",label2="value2"} 2 456
+a_seconds{label1="value3",label2="value2"} 3 123
+a_seconds{label1="value3",label2="value2"} 4 123
+a_seconds{label1="value1",label2="value4"} 1 123
+a_seconds{label1="value1",label2="value4"} 2 456
+a_seconds{label1="value3",label2="value4"} 3 123
+a_seconds{label1="value3",label2="value4"} 4 123
+# TYPE b_seconds gauge
+# HELP b_seconds seconds in b
+# UNIT b_seconds seconds
+b_seconds{label1="value1",label2="value2"} 1.5 123
+b_seconds{label1="value1",label2="value2"} 2.5 456
+b_seconds{label1="value3",label2="value2"} 3.5 123
+b_seconds{label1="value3",label2="value2"} 4.5 123
+b_seconds{label1="value1",label2="value4"} 1.5 123
+b_seconds{label1="value1",label2="value4"} 2.5 456
+b_seconds{label1="value3",label2="value4"} 3.5 123
+b_seconds{label1="value3",label2="value4"} 4.5 123
+# EOF
