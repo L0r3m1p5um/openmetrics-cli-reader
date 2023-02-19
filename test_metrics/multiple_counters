@@ -1,0 +1,21 @@
+# TYPE go_goroutines counter
+# HELP go_goroutines total goroutines run
+go_goroutines_total{label="value1"} 1000 123
+go_goroutines_created{label="value1"} 12345 123
+go_goroutines_total{label="value1"} 2000 456
+go_goroutines_created{label="value1"} 22345 456
+go_goroutines_total{label="value2"} 3000 123
+go_goroutines_created{label="value2"} 32345 123
+go_goroutines_total{label="value2"} 4000 456
+go_goroutines_created{label="value2"} 42345 456
+# TYPE http_requests counter
+# HELP http_requests total number of requests
+http_requests_total{label="value1"} 1000 123
+http_requests_created{label="value1"} 12345 123
+http_requests_total{label="value1"} 2000 456
+http_requests_created{label="value1"} 22345 456
+http_requests_total{label="value2"} 3000 123
+http_requests_created{label="value2"} 32345 123
+http_requests_total{label="value2"} 4000 456
+http_requests_created{label="value2"} 42345 456
+# EOF

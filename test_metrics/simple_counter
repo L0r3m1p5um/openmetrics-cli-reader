@@ -1,0 +1,5 @@
+# TYPE go_goroutines counter
+# HELP go_goroutines total goroutines run
+go_goroutines_total 1000 
+go_goroutines_created 12345
+# EOF

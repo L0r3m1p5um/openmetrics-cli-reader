@@ -55,11 +55,11 @@ pub struct Label {
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct MetricPoint {
     value: MetricValue,
-    timestamp: Option<f64>,
+    timestamp: Option<IntOrFloat>,
 }
 
 impl MetricPoint {
-    fn new(value: MetricValue, timestamp: Option<f64>) -> Self {
+    fn new(value: MetricValue, timestamp: Option<IntOrFloat>) -> Self {
         MetricPoint { value, timestamp }
     }
 }
@@ -368,6 +368,10 @@ fn parse_metric<'a, E: ParseError<Span<'a>>>(
                 map(|it| parse_gauge_metric(it, name), |metric| (None, metric)),
                 multispace0,
             )(i),
+            MetricType::Counter => terminated(
+                map(|it| parse_counter_metric(it, name), |metric| (None, metric)),
+                multispace0,
+            )(i),
             mtype => unimplemented!("Parsing has not been implemented for metric type {mtype:?}"),
         },
         None => match metric_type {
@@ -415,11 +419,12 @@ fn parse_metric<'a, E: ParseError<Span<'a>>>(
             ),
         ))
     } else {
-        Err(nom::Err::Error(E::from_error_kind(
-            i,
-            nom::error::ErrorKind::Fail,
-        )))
+        Err(nom_err(i))
     }
+}
+
+fn nom_err<'a, E: ParseError<Span<'a>>>(i: Span<'a>) -> nom::Err<E> {
+    nom::Err::Error(E::from_error_kind(i, nom::error::ErrorKind::Fail))
 }
 
 #[cfg(test)]
@@ -763,8 +768,39 @@ mod test {
             Metric {
                 labels: serde_json::from_str("{\"label\":\"value\"}").unwrap(),
                 metric_points: vec![
-                    MetricPoint::new(MetricValue::GaugeValue(IntOrFloat::Int(99)), Some(123.0)),
-                    MetricPoint::new(MetricValue::GaugeValue(IntOrFloat::Int(100)), Some(456.0))
+                    MetricPoint::new(
+                        MetricValue::GaugeValue(IntOrFloat::Int(99)),
+                        Some(123.into())
+                    ),
+                    MetricPoint::new(
+                        MetricValue::GaugeValue(IntOrFloat::Int(100)),
+                        Some(456.into())
+                    )
+                ]
+            }
+        );
+    }
+
+    #[test]
+    fn parse_counter_with_multiple_metric_points() {
+        let src =
+            "foo_seconds_total{label=\"value\"} 99 123\nfoo_seconds_total{label=\"value\"} 100 456\n# EOF";
+        let (_, (_, metric)) =
+            parse_metric::<ErrorTree<Span>>(src.into(), Some("foo_seconds"), MetricType::Counter)
+                .unwrap();
+        assert_eq!(
+            metric,
+            Metric {
+                labels: serde_json::from_str("{\"label\":\"value\"}").unwrap(),
+                metric_points: vec![
+                    MetricPoint::new(
+                        CounterValue::new(IntOrFloat::Int(99), None).into(),
+                        Some(123.into())
+                    ),
+                    MetricPoint::new(
+                        CounterValue::new(IntOrFloat::Int(100), None).into(),
+                        Some(456.into())
+                    )
                 ]
             }
         );
