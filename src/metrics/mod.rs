@@ -154,7 +154,10 @@ pub fn parse_metric_set<'a, E: ParseError<Span<'a>>>(
     let mut i = i;
     while let Ok((input, (metric_family, eof))) = tuple((
         parse_metric_family::<ErrorTree<Span<'a>>>,
-        opt(tag("# EOF")),
+        opt(tuple((
+            tag("# EOF"),
+            nom::bytes::complete::take_while(|_| true),
+        ))),
     ))(i)
     {
         metric_families.push(metric_family);
