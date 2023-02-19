@@ -43,6 +43,44 @@ pub fn parse_gauge_metric<'a, E: ParseError<Span<'a>>>(
     )(i)
 }
 
+pub fn parse_unknown_metric_with_name<'a, E: ParseError<Span<'a>>>(
+    i: Span<'a>,
+    name: &str,
+) -> IResult<Span<'a>, Metric, E> {
+    map(
+        tuple((
+            tag(name),
+            terminated(parse_labelset, space0),
+            parse_int_or_float,
+        )),
+        |(_, labels, value)| Metric {
+            labels,
+            metric_points: vec![MetricPoint::UnknownValue(value)],
+        },
+    )(i)
+}
+
+pub fn parse_unknown_metric_without_name<'a, E: ParseError<Span<'a>>>(
+    i: Span<'a>,
+) -> IResult<Span<'a>, (Span<'a>, Metric), E> {
+    map(
+        tuple((
+            is_a(METRIC_NAME_CHARS),
+            terminated(parse_labelset, space0),
+            parse_int_or_float,
+        )),
+        |(name, labels, value)| {
+            (
+                name,
+                Metric {
+                    labels,
+                    metric_points: vec![MetricPoint::UnknownValue(value)],
+                },
+            )
+        },
+    )(i)
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub enum IntOrFloat {
     Int(i64),
@@ -141,5 +179,22 @@ mod test {
             }
         );
     }
-    
+
+    #[test]
+    fn parse_unknown_metric_with_labels() {
+        let src = "foo_seconds{label=\"value\"} 100\n";
+        let (_, (name, metric)) = parse_unknown_metric_without_name::<ErrorTree<Span>>(src.into()).unwrap();
+        assert_eq!(
+            metric,
+            Metric {
+                labels: vec![Label {
+                    name: "label".to_string(),
+                    value: "value".to_string()
+                }],
+                metric_points: vec![MetricPoint::UnknownValue(IntOrFloat::Int(100))]
+            }
+        );
+        assert_eq!(name, "foo_seconds".into());
+    }
+
 }

@@ -9,23 +9,24 @@ use nom::{
     bytes::{complete::is_a, streaming::tag},
     character::{
         streaming::space0,
-        streaming::{
-            alphanumeric1, line_ending, multispace0, multispace1, not_line_ending, space1,
-        },
+        streaming::{alphanumeric1, line_ending, multispace0, not_line_ending, space1},
     },
-    combinator::{map, value},
+    combinator::{map, opt, value},
     error::ParseError,
-    multi::separated_list0,
+    multi::{self, separated_list0},
     sequence::{delimited, preceded, terminated, tuple},
     IResult,
 };
 use nom_locate::LocatedSpan;
-use nom_supreme::error::{BaseErrorKind, ErrorTree, GenericErrorTree};
+use nom_supreme::{
+    error::{BaseErrorKind, ErrorTree, GenericErrorTree},
+    parser_ext::Terminated,
+};
 use serde::Serialize;
 
 const METRIC_NAME_CHARS: &str = "abcdefghijklmnopqrstuvwxyz_";
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct MetricSet {
     metric_families: Vec<MetricFamily>,
 }
@@ -53,7 +54,7 @@ pub struct Label {
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub enum MetricPoint {
-    // UnknownValue(IntOrFloat),
+    UnknownValue(IntOrFloat),
     GaugeValue(IntOrFloat),
     // CounterValue(CounterValue),
     // HistogramValue,
@@ -138,6 +139,25 @@ fn parse_labelset<'a, E: ParseError<Span<'a>>>(i: Span<'a>) -> IResult<Span<'a>,
     ))(i)
 }
 
+fn parse_metric_set<'a, E: ParseError<Span<'a>>>(i: Span<'a>) -> IResult<Span<'a>, MetricSet, E> {
+    let mut metric_families = vec![];
+    let mut i = i;
+    while let Ok((input, (metric_family, eof))) = tuple((
+        parse_metric_family::<ErrorTree<Span<'a>>>,
+        opt(tag("# EOF")),
+    ))(i)
+    {
+        metric_families.push(metric_family);
+        i = input;
+        println!("Added metric family");
+        if eof.is_some() {
+            break;
+        }
+    }
+
+    Ok((i, MetricSet { metric_families }))
+}
+
 fn parse_metric_family<'a, E: ParseError<Span<'a>>>(
     i: Span<'a>,
 ) -> IResult<Span<'a>, MetricFamily, E> {
@@ -172,9 +192,15 @@ fn parse_metric_family<'a, E: ParseError<Span<'a>>>(
     while let Ok((input, (line_name, metric))) =
         parse_metric::<ErrorTree<Span<'a>>>(i, metric_family_name, metric_family_type)
     {
+        if metric_family_name == None {
+            if let Some(name) = line_name {
+                metric_family_name = Some(*name.fragment());
+            }
+        }
         i = input;
         metrics.push(metric);
     }
+    println!("Input: '{i}'");
 
     match metric_family_name {
         Some(name) => Ok((
@@ -313,14 +339,31 @@ fn parse_metric<'a, E: ParseError<Span<'a>>>(
     name: Option<&str>,
     metric_type: MetricType,
 ) -> IResult<Span<'a>, (Option<Span<'a>>, Metric), E> {
-    let parse_metric_with_type = match name {
+    match name {
         Some(name) => match metric_type {
-            MetricType::Gauge => map(|it| parse_gauge_metric(it, name), |metric| (None, metric)),
+            MetricType::Unknown => terminated(
+                map(
+                    |it| parse_unknown_metric_with_name(it, name),
+                    |metric| (None, metric),
+                ),
+                multispace0,
+            )(i),
+            MetricType::Gauge => terminated(
+                map(|it| parse_gauge_metric(it, name), |metric| (None, metric)),
+                multispace0,
+            )(i),
             mtype => unimplemented!("Parsing has not been implemented for metric type {mtype:?}"),
         },
-        None => unimplemented!(),
-    };
-    terminated(parse_metric_with_type, multispace0)(i)
+        None => match metric_type {
+            MetricType::Unknown => terminated(
+                map(parse_unknown_metric_without_name, |(name, metric)| {
+                    (Some(name), metric)
+                }),
+                multispace0,
+            )(i),
+            _ => unimplemented!(),
+        },
+    }
 }
 
 #[cfg(test)]
@@ -552,7 +595,7 @@ mod test {
         let src = "# TYPE foo_seconds gauge\nfoo_seconds{label=\"value\"} 150\n# EOF";
         let metric_family = final_parser(terminated(
             parse_metric_family::<ErrorTree<Span>>,
-            tag("# EOF"),
+            preceded(multispace0, tag("# EOF")),
         ))(src.into())
         .or_else(|e| {
             render_error(src, e);
@@ -571,6 +614,36 @@ mod test {
                     value: "value".to_string(),
                 }],
                 metric_points: vec![MetricPoint::GaugeValue(IntOrFloat::Int(150))],
+            }],
+        };
+
+        assert_eq!(metric_family, expected);
+    }
+
+    #[test]
+    fn parse_metric_family_without_metadata() {
+        let src = "foo_seconds{label=\"value\"} 150\n# EOF";
+        let metric_family = final_parser(terminated(
+            parse_metric_family::<ErrorTree<Span>>,
+            tag("# EOF"),
+        ))(src.into())
+        .or_else(|e| {
+            render_error(src, e);
+            Err(())
+        })
+        .unwrap();
+
+        let expected = MetricFamily {
+            name: "foo_seconds".to_string(),
+            metric_type: MetricType::Unknown,
+            unit: None,
+            help: None,
+            metrics: vec![Metric {
+                labels: vec![Label {
+                    name: "label".to_string(),
+                    value: "value".to_string(),
+                }],
+                metric_points: vec![MetricPoint::UnknownValue(IntOrFloat::Int(150))],
             }],
         };
 
@@ -632,5 +705,86 @@ mod test {
                 metric_points: vec![MetricPoint::GaugeValue(IntOrFloat::Int(99))]
             }
         );
+    }
+
+    #[test]
+    fn parse_unknown_metric_with_name_test() {
+        let src = "foo_seconds{label=\"value\"} 99\n# EOF";
+        let (_, (_, metric)) =
+            parse_metric::<ErrorTree<Span>>(src.into(), Some("foo_seconds"), MetricType::Unknown)
+                .unwrap();
+        assert_eq!(
+            metric,
+            Metric {
+                labels: vec![Label {
+                    name: "label".to_string(),
+                    value: "value".to_string()
+                }],
+                metric_points: vec![MetricPoint::UnknownValue(IntOrFloat::Int(99))]
+            }
+        );
+    }
+
+    #[test]
+    fn parse_unknown_metric_without_name_test() {
+        let src = "foo_seconds{label=\"value\"} 99\n# EOF";
+        let (_, (name, metric)) =
+            parse_metric::<ErrorTree<Span>>(src.into(), None, MetricType::Unknown).unwrap();
+        assert_eq!(name, Some("foo_seconds".into()));
+        assert_eq!(
+            metric,
+            Metric {
+                labels: vec![Label {
+                    name: "label".to_string(),
+                    value: "value".to_string()
+                }],
+                metric_points: vec![MetricPoint::UnknownValue(IntOrFloat::Int(99))]
+            }
+        );
+    }
+
+    #[test]
+    fn parse_metric_set_test() {
+        let src = "# TYPE foo_seconds gauge\nfoo_seconds{label=\"value\"} 150\n# TYPE bar_seconds gauge\nbar_seconds{label=\"value\"} 50\n# EOF";
+        let metric_set = final_parser(parse_metric_set::<ErrorTree<Span>>)(src.into())
+            .or_else(|e| {
+                render_error(src, e);
+                Err(())
+            })
+            .unwrap();
+
+        let expected_1 = MetricFamily {
+            name: "foo_seconds".to_string(),
+            metric_type: MetricType::Gauge,
+            unit: None,
+            help: None,
+            metrics: vec![Metric {
+                labels: vec![Label {
+                    name: "label".to_string(),
+                    value: "value".to_string(),
+                }],
+                metric_points: vec![MetricPoint::GaugeValue(IntOrFloat::Int(150))],
+            }],
+        };
+
+        let expected_2 = MetricFamily {
+            name: "bar_seconds".to_string(),
+            metric_type: MetricType::Gauge,
+            unit: None,
+            help: None,
+            metrics: vec![Metric {
+                labels: vec![Label {
+                    name: "label".to_string(),
+                    value: "value".to_string(),
+                }],
+                metric_points: vec![MetricPoint::GaugeValue(IntOrFloat::Int(50))],
+            }],
+        };
+
+        let expected_metricset = MetricSet {
+            metric_families: vec![expected_1, expected_2],
+        };
+
+        assert_eq!(metric_set, expected_metricset);
     }
 }
