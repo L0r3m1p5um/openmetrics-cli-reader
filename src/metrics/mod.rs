@@ -1,6 +1,6 @@
 mod metric_types;
 
-use std::error::Error;
+use std::{collections::HashMap, error::Error};
 
 use metric_types::*;
 use miette::GraphicalReportHandler;
@@ -42,7 +42,7 @@ pub struct MetricFamily {
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct Metric {
-    labels: Vec<Label>,
+    labels: HashMap<String, String>,
     metric_points: Vec<MetricPoint>,
 }
 
@@ -150,7 +150,9 @@ fn parse_labelset<'a, E: ParseError<Span<'a>>>(i: Span<'a>) -> IResult<Span<'a>,
     ))(i)
 }
 
-pub fn parse_metric_set<'a, E: ParseError<Span<'a>>>(i: Span<'a>) -> IResult<Span<'a>, MetricSet, E> {
+pub fn parse_metric_set<'a, E: ParseError<Span<'a>>>(
+    i: Span<'a>,
+) -> IResult<Span<'a>, MetricSet, E> {
     let mut metric_families = vec![];
     let mut i = i;
     while let Ok((input, (metric_family, eof))) = tuple((
@@ -397,12 +399,17 @@ fn parse_metric<'a, E: ParseError<Span<'a>>>(
     };
 
     if metric_points.len() > 0 {
+        let mut label_map = HashMap::new();
+        for label in metric_labels {
+            label_map.insert(label.name, label.value);
+        }
+
         Ok((
             i,
             (
                 metric_name,
                 Metric {
-                    labels: metric_labels,
+                    labels: label_map,
                     metric_points,
                 },
             ),
@@ -658,10 +665,7 @@ mod test {
             unit: None,
             help: None,
             metrics: vec![Metric {
-                labels: vec![Label {
-                    name: "label".to_string(),
-                    value: "value".to_string(),
-                }],
+                labels: serde_json::from_str("{\"label\":\"value\"}").unwrap(),
                 metric_points: vec![MetricPoint {
                     value: MetricValue::GaugeValue(IntOrFloat::Int(150)),
                     timestamp: None,
@@ -691,10 +695,7 @@ mod test {
             unit: None,
             help: None,
             metrics: vec![Metric {
-                labels: vec![Label {
-                    name: "label".to_string(),
-                    value: "value".to_string(),
-                }],
+                labels: serde_json::from_str("{\"label\":\"value\"}").unwrap(),
                 metric_points: vec![MetricValue::UnknownValue(IntOrFloat::Int(150)).into()],
             }],
         };
@@ -722,17 +723,11 @@ mod test {
             help: None,
             metrics: vec![
                 Metric {
-                    labels: vec![Label {
-                        name: "label".to_string(),
-                        value: "value1".to_string(),
-                    }],
+                    labels: serde_json::from_str("{\"label\":\"value1\"}").unwrap(),
                     metric_points: vec![MetricValue::GaugeValue(IntOrFloat::Int(150)).into()],
                 },
                 Metric {
-                    labels: vec![Label {
-                        name: "label".to_string(),
-                        value: "value2".to_string(),
-                    }],
+                    labels: serde_json::from_str("{\"label\":\"value2\"}").unwrap(),
                     metric_points: vec![MetricValue::GaugeValue(IntOrFloat::Int(100)).into()],
                 },
             ],
@@ -750,10 +745,7 @@ mod test {
         assert_eq!(
             metric,
             Metric {
-                labels: vec![Label {
-                    name: "label".to_string(),
-                    value: "value".to_string()
-                }],
+                labels: serde_json::from_str("{\"label\":\"value\"}").unwrap(),
                 metric_points: vec![MetricValue::GaugeValue(IntOrFloat::Int(99)).into()]
             }
         );
@@ -769,10 +761,7 @@ mod test {
         assert_eq!(
             metric,
             Metric {
-                labels: vec![Label {
-                    name: "label".to_string(),
-                    value: "value".to_string()
-                }],
+                labels: serde_json::from_str("{\"label\":\"value\"}").unwrap(),
                 metric_points: vec![
                     MetricPoint::new(MetricValue::GaugeValue(IntOrFloat::Int(99)), Some(123.0)),
                     MetricPoint::new(MetricValue::GaugeValue(IntOrFloat::Int(100)), Some(456.0))
@@ -790,10 +779,7 @@ mod test {
         assert_eq!(
             metric,
             Metric {
-                labels: vec![Label {
-                    name: "label".to_string(),
-                    value: "value".to_string()
-                }],
+                labels: serde_json::from_str("{\"label\":\"value\"}").unwrap(),
                 metric_points: vec![MetricValue::UnknownValue(IntOrFloat::Int(99)).into()]
             }
         );
@@ -808,10 +794,7 @@ mod test {
         assert_eq!(
             metric,
             Metric {
-                labels: vec![Label {
-                    name: "label".to_string(),
-                    value: "value".to_string()
-                }],
+                labels: serde_json::from_str("{\"label\":\"value\"}").unwrap(),
                 metric_points: vec![MetricValue::UnknownValue(IntOrFloat::Int(99)).into()]
             }
         );
@@ -833,10 +816,7 @@ mod test {
             unit: None,
             help: None,
             metrics: vec![Metric {
-                labels: vec![Label {
-                    name: "label".to_string(),
-                    value: "value".to_string(),
-                }],
+                labels: serde_json::from_str("{\"label\":\"value\"}").unwrap(),
                 metric_points: vec![MetricValue::GaugeValue(IntOrFloat::Int(150)).into()],
             }],
         };
@@ -847,10 +827,7 @@ mod test {
             unit: None,
             help: None,
             metrics: vec![Metric {
-                labels: vec![Label {
-                    name: "label".to_string(),
-                    value: "value".to_string(),
-                }],
+                labels: serde_json::from_str("{\"label\":\"value\"}").unwrap(),
                 metric_points: vec![MetricValue::GaugeValue(IntOrFloat::Int(50)).into()],
             }],
         };

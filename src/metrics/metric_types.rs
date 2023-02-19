@@ -28,7 +28,7 @@ pub enum MetricType {
     Summary,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum MetricValue {
     UnknownValue(IntOrFloat),
     GaugeValue(IntOrFloat),
@@ -37,6 +37,17 @@ pub enum MetricValue {
     // StateSetValue,
     // InfoValue,
     // SummaryValue,
+}
+
+impl Serialize for MetricValue {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer {
+            match self {
+                MetricValue::GaugeValue(x) => x.serialize(serializer),
+                MetricValue::UnknownValue(x) => x.serialize(serializer),
+            }
+    }
 }
 
 pub fn parse_gauge_metric<'a, E: ParseError<Span<'a>>>(
@@ -101,10 +112,21 @@ pub fn parse_unknown_metric_without_name<'a, E: ParseError<Span<'a>>>(
     )(i)
 }
 
-#[derive(Debug, Copy, Clone, Serialize, PartialEq)]
+#[derive(Debug, Copy, Clone,  PartialEq)]
 pub enum IntOrFloat {
     Int(i64),
     Float(f64),
+}
+
+impl Serialize for IntOrFloat {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer {
+        match self {
+            IntOrFloat::Float(x) => x.serialize(serializer),
+            IntOrFloat::Int(x) => x.serialize(serializer),
+        }
+    }
 }
 
 fn parse_int_or_float<'a, E: ParseError<Span<'a>>>(
