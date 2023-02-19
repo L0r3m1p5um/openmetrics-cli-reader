@@ -1,5 +1,6 @@
-use client::{create_client, get_metricset};
 use clap::Parser;
+use client::print_metrics;
+use tokio::time::Duration;
 
 mod client;
 mod metrics;
@@ -8,13 +9,22 @@ mod metrics;
 async fn main() -> color_eyre::Result<()> {
     color_eyre::install()?;
     let args = Cli::parse();
-    let client = create_client()?;
-    let metricset = get_metricset(&args.url, client).await?;
-    println!("{}", serde_json::to_string(&metricset)?);
+
+    print_metrics(
+        &args.url,
+        match args.interval {
+            Some(secs) => Some(Duration::from_secs(secs)),
+            None => None,
+        },
+    )
+    .await?;
     Ok(())
 }
 
 #[derive(Parser)]
 struct Cli {
     url: String,
+
+    #[clap(short, long)]
+    interval: Option<u64>,
 }
