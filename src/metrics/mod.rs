@@ -6,22 +6,19 @@ use metric_types::*;
 use miette::GraphicalReportHandler;
 use nom::{
     branch::alt,
-    bytes::{complete::is_a, streaming::tag},
+    bytes::complete::{is_a, tag},
     character::{
-        streaming::space0,
-        streaming::{alphanumeric1, line_ending, multispace0, not_line_ending, space1},
+        complete::space0,
+        complete::{alphanumeric1, line_ending, multispace0, not_line_ending, space1},
     },
     combinator::{map, opt, value},
     error::ParseError,
-    multi::{self, separated_list0},
+    multi::separated_list0,
     sequence::{delimited, preceded, terminated, tuple},
     IResult,
 };
 use nom_locate::LocatedSpan;
-use nom_supreme::{
-    error::{BaseErrorKind, ErrorTree, GenericErrorTree},
-    parser_ext::Terminated,
-};
+use nom_supreme::error::{BaseErrorKind, ErrorTree, GenericErrorTree};
 use serde::Serialize;
 
 const METRIC_NAME_CHARS: &str = "abcdefghijklmnopqrstuvwxyz_";

@@ -1,21 +1,16 @@
-use chrono::{DateTime, Utc};
 use nom::{
     branch::alt,
-    bytes::{
-        complete::is_a,
-        streaming::{tag, take_until1},
-    },
-    character::streaming::{multispace1, one_of, space0, space1},
+    bytes::complete::{is_a, tag},
+    character::complete::{multispace1, one_of, space0},
     combinator::{map, not, opt},
     error::ParseError,
-    number::streaming::double,
+    number::complete::double,
     sequence::{preceded, terminated, tuple},
     IResult,
 };
 use serde::Serialize;
 
-use super::{nom_err, parse_labelset, Label, Metric, MetricPoint, Span, METRIC_NAME_CHARS};
-
+use super::{nom_err, parse_labelset, Label, MetricPoint, Span, METRIC_NAME_CHARS};
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
