@@ -6,12 +6,15 @@ use metric_types::*;
 use miette::GraphicalReportHandler;
 use nom::{
     branch::alt,
-    bytes::complete::{is_a, tag},
+    bytes::complete::{escaped, is_a, tag},
     character::{
         complete::space0,
-        complete::{alphanumeric1, line_ending, multispace0, not_line_ending, space1},
+        complete::{
+            alphanumeric1, anychar, line_ending, multispace0, none_of, not_line_ending, one_of,
+            space1,
+        },
     },
-    combinator::{map, opt, value},
+    combinator::{map, not, opt, value},
     error::ParseError,
     multi::separated_list0,
     sequence::{delimited, preceded, terminated, tuple},
@@ -125,7 +128,11 @@ fn parse_label<'a, E: ParseError<Span<'a>>>(i: Span<'a>) -> IResult<Span<'a>, La
     let (input, (name, _, value)) = tuple((
         alphanumeric1,
         tag("="),
-        delimited(tag("\""), alphanumeric1, tag("\"")),
+        delimited(
+            tag("\""),
+            escaped(none_of("\\\""), '\\', one_of(r#"\""#)),
+            tag("\""),
+        ),
     ))(i)?;
     Ok((
         input,
@@ -452,6 +459,43 @@ mod test {
             }
         );
     }
+
+    #[test]
+    fn parse_label_escaped() {
+        let src = "name=\"1\\\"2\"";
+        let label = final_parser(parse_label::<ErrorTree<Span>>)(Span::new(src))
+            .or_else(|e| {
+                render_error(src, e);
+                Err(())
+            })
+            .unwrap();
+        assert_eq!(
+            label,
+            Label {
+                name: "name".to_string(),
+                value: "1\\\"2".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn parse_label_with_special_chars() {
+        let src = "name=\"Hello! This is a test.\"";
+        let label = final_parser(parse_label::<ErrorTree<Span>>)(Span::new(src))
+            .or_else(|e| {
+                render_error(src, e);
+                Err(())
+            })
+            .unwrap();
+        assert_eq!(
+            label,
+            Label {
+                name: "name".to_string(),
+                value: "Hello! This is a test.".to_string()
+            }
+        );
+    }
+
 
     #[test]
     fn parse_labelset_test() {

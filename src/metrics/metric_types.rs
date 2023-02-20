@@ -32,7 +32,7 @@ pub enum MetricValue {
     CounterValue(CounterValue),
     // HistogramValue,
     // StateSetValue,
-    // InfoValue,
+    InfoValue(IntOrFloat),
     // SummaryValue,
 }
 
@@ -45,6 +45,7 @@ impl Serialize for MetricValue {
             MetricValue::GaugeValue(x) => x.serialize(serializer),
             MetricValue::UnknownValue(x) => x.serialize(serializer),
             MetricValue::CounterValue(x) => x.serialize(serializer),
+            MetricValue::InfoValue(x) => x.serialize(serializer),
         }
     }
 }
@@ -67,6 +68,19 @@ pub fn parse_gauge_metric<'a, E: ParseError<Span<'a>>>(
                     MetricPoint::new(MetricValue::GaugeValue(value), timestamp),
                 )
             },
+        ),
+    )(i)
+}
+
+pub fn parse_info_metric<'a, E: ParseError<Span<'a>>>(
+    i: Span<'a>,
+    name: &str,
+) -> IResult<Span<'a>, (Vec<Label>, MetricPoint), E> {
+    preceded(
+        tuple((tag(name), tag("_info"))),
+        map(
+            tuple((terminated(parse_labelset, space0), parse_int_or_float)),
+            |(labels, value)| (labels, MetricValue::InfoValue(value).into()),
         ),
     )(i)
 }
@@ -436,6 +450,28 @@ mod test {
                     value: "value".to_string()
                 }],
                 MetricValue::GaugeValue(IntOrFloat::Int(100)).into()
+            )
+        );
+    }
+
+    #[test]
+    fn parse_info_metric_test() {
+        let src = "foo_info{name=\"pretty name\",version=\"8.3.7\"} 1\n";
+        let (_, metric) = parse_info_metric::<ErrorTree<Span>>(src.into(), "foo").unwrap();
+        assert_eq!(
+            metric,
+            (
+                vec![
+                    Label {
+                        name: "name".to_string(),
+                        value: "pretty name".to_string()
+                    },
+                    Label {
+                        name: "version".to_string(),
+                        value: "8.3.7".to_string()
+                    }
+                ],
+                MetricValue::InfoValue(IntOrFloat::Int(1)).into()
             )
         );
     }
