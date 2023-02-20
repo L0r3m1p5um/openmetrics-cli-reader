@@ -1,0 +1,15 @@
+# TYPE acme_http_router_request_seconds summary
+# UNIT acme_http_router_request_seconds seconds
+# HELP acme_http_router_request_seconds Latency though all of ACME's HTTP request router.
+acme_http_router_request_seconds_sum{path="/api/v1",method="GET"} 9036.32
+acme_http_router_request_seconds_count{path="/api/v1",method="GET"} 807283.0
+acme_http_router_request_seconds_created{path="/api/v1",method="GET"} 1605281325.0
+acme_http_router_request_seconds{path="/api/v1",method="GET",quantile="0.5"} 1.3
+acme_http_router_request_seconds{path="/api/v1",method="GET",quantile="0.95"} 2.1
+acme_http_router_request_seconds{path="/api/v1",method="GET",quantile="0.99"} 2.8
+acme_http_router_request_seconds_sum{path="/api/v2",method="POST"} 479.3
+acme_http_router_request_seconds_count{path="/api/v2",method="POST"} 34.0
+acme_http_router_request_seconds_created{path="/api/v2",method="POST"} 1605281325.0
+acme_http_router_request_seconds{path="/api/v2",method="POST",quantile="0.5"} 1.5
+acme_http_router_request_seconds{path="/api/v2",method="POST",quantile="0.95"} 2.4
+acme_http_router_request_seconds{path="/api/v2",method="POST",quantile="0.99"} 3.1

@@ -405,7 +405,6 @@ fn parse_summary_metric_line<'a, E: ParseError<Span<'a>>>(
             terminated(parse_labelset::<E>, space0),
         )),
     )(i)?;
-    println!("Parsing: {field_type:?}");
 
     let (i, value) = match field_type {
         SummaryField::Count(_) => terminated(
@@ -419,11 +418,7 @@ fn parse_summary_metric_line<'a, E: ParseError<Span<'a>>>(
         })(i)?,
         _ => map(double, |value| SummaryValueType::F64(value))(i)?,
     };
-    println!("Parsed value {value:?}");
-    println!("{i}");
     let (i, timestamp) = terminated(parse_timestamp, multispace1)(i)?;
-    println!("After");
-    println!("{i}");
 
     let field = match (field_type, value) {
         (SummaryField::Count(_), SummaryValueType::U64(x)) => Ok(SummaryField::Count(x)),
@@ -435,9 +430,7 @@ fn parse_summary_metric_line<'a, E: ParseError<Span<'a>>>(
                 .iter()
                 .find(|label| &label.name == "quantile")
                 .ok_or_else(|| nom_err(i))?;
-            println!("Label {quantile:?}");
             let value: Result<f64, _> = quantile.value.parse();
-            println!("Parsed: {value:?}");
             Ok(SummaryField::Quantile(Quantile {
                 quantile: quantile.value.parse().map_err(|err| nom_err(i))?,
                 value: x,

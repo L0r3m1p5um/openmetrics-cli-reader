@@ -427,6 +427,11 @@ fn parse_metric<'a, E: ParseError<Span<'a>>>(
                 map(|it| parse_counter_metric(it, name), |metric| (None, metric)),
                 multispace0,
             )(i),
+            MetricType::Summary => terminated(
+                map(|it| parse_summary_metric(it, name), |metric| (None, metric)),
+                multispace0,
+            )(i),
+
             mtype => unimplemented!("Parsing has not been implemented for metric type {mtype:?}"),
         },
         None => match metric_type {
