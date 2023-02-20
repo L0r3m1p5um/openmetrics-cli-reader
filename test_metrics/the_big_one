@@ -1,4 +1,9 @@
-
+# TYPE foo info
+# HELP foo Application information
+foo_info{name="pretty name",version="8.3.7"} 1
+# TYPE node info
+# HELP node Application information
+node_info{node="HOSTNAME",pod="openmetrics-test-1234"} 1
 # TYPE go_goroutines counter
 # HELP go_goroutines total goroutines run
 go_goroutines_total{label="value1"} 1000 123

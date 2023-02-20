@@ -375,6 +375,10 @@ fn parse_metric<'a, E: ParseError<Span<'a>>>(
                 map(|it| parse_gauge_metric(it, name), |metric| (None, metric)),
                 multispace0,
             )(i),
+            MetricType::Info => terminated(
+                map(|it| parse_info_metric(it, name), |metric| (None, metric)),
+                multispace0,
+            )(i),
             MetricType::Counter => terminated(
                 map(|it| parse_counter_metric(it, name), |metric| (None, metric)),
                 multispace0,
@@ -495,7 +499,6 @@ mod test {
             }
         );
     }
-
 
     #[test]
     fn parse_labelset_test() {

@@ -1,0 +1,4 @@
+# TYPE foo info
+# HELP foo Application information
+foo_info{name="pretty name",version="8.3.7"} 1
+# EOF
