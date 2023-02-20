@@ -10,11 +10,10 @@ use nom::{
     character::{
         complete::space0,
         complete::{
-            alphanumeric1, anychar, line_ending, multispace0, none_of, not_line_ending, one_of,
-            space1,
+            alphanumeric1, line_ending, multispace0, none_of, not_line_ending, one_of, space1,
         },
     },
-    combinator::{map, not, opt, value},
+    combinator::{map, opt, value},
     error::ParseError,
     multi::separated_list0,
     sequence::{delimited, preceded, terminated, tuple},
@@ -46,10 +45,52 @@ pub struct Metric {
     metric_points: Vec<MetricPoint>,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq, PartialOrd)]
 pub struct Label {
-    name: String,
-    value: String,
+    pub name: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, PartialOrd)]
+pub struct LabelSet {
+    labels: Vec<Label>,
+}
+
+impl From<Vec<Label>> for LabelSet {
+    fn from(value: Vec<Label>) -> Self {
+        LabelSet { labels: value }
+    }
+}
+
+impl Serialize for LabelSet {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        self.labels.serialize(serializer)
+    }
+}
+
+impl PartialEq for LabelSet {
+    fn eq(&self, other: &Self) -> bool {
+        self.labels
+            .iter()
+            .filter(|label| label_filter(&label.name))
+            .eq(other
+                .labels
+                .iter()
+                .filter(|label| label_filter(&label.name)))
+    }
+}
+
+impl LabelSet {
+    pub fn new() -> Self {
+        LabelSet { labels: vec![] }
+    }
+}
+
+fn label_filter(name: &str) -> bool {
+    name != "quantile" && name != "le"
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -143,14 +184,17 @@ fn parse_label<'a, E: ParseError<Span<'a>>>(i: Span<'a>) -> IResult<Span<'a>, La
     ))
 }
 
-fn parse_labelset<'a, E: ParseError<Span<'a>>>(i: Span<'a>) -> IResult<Span<'a>, Vec<Label>, E> {
+fn parse_labelset<'a, E: ParseError<Span<'a>>>(i: Span<'a>) -> IResult<Span<'a>, LabelSet, E> {
     alt((
-        delimited(
-            tag("{"),
-            separated_list0(tag(","), parse_label::<E>),
-            tag("}"),
+        map(
+            delimited(
+                tag("{"),
+                separated_list0(tag(","), parse_label::<E>),
+                tag("}"),
+            ),
+            { |labels| labels.into() },
         ),
-        map(tag(" "), |_| vec![]),
+        map(tag(" "), |_| LabelSet { labels: vec![] }),
     ))(i)
 }
 
@@ -359,7 +403,7 @@ fn parse_metric<'a, E: ParseError<Span<'a>>>(
 ) -> IResult<Span<'a>, (Option<Span<'a>>, Metric), E> {
     let mut i = i;
     let mut metric_points = vec![];
-    let mut metric_labels: Option<Vec<Label>> = None;
+    let mut metric_labels: Option<LabelSet> = None;
     let mut metric_name: Option<Span<'a>> = None;
 
     while let Ok((i_, (name, (labels, metric_point)))) = match name {
@@ -410,12 +454,12 @@ fn parse_metric<'a, E: ParseError<Span<'a>>>(
     }
     let metric_labels = match metric_labels {
         Some(labels) => labels,
-        None => vec![],
+        None => LabelSet { labels: vec![] },
     };
 
     if metric_points.len() > 0 {
         let mut label_map = HashMap::new();
-        for label in metric_labels {
+        for label in metric_labels.labels {
             label_map.insert(label.name, label.value);
         }
 
@@ -483,6 +527,107 @@ mod test {
     }
 
     #[test]
+    fn compare_labelset() {
+        let labels1 = vec![
+            Label {
+                name: "label".into(),
+                value: "value".into(),
+            },
+            Label {
+                name: "label2".into(),
+                value: "value2".into(),
+            },
+        ];
+        let labels2 = vec![
+            Label {
+                name: "label".into(),
+                value: "value".into(),
+            },
+            Label {
+                name: "label2".into(),
+                value: "value2".into(),
+            },
+        ];
+
+        assert_eq!(LabelSet { labels: labels1 }, LabelSet { labels: labels2 })
+    }
+
+    #[test]
+    fn compare_labelset_ne() {
+        let labels1 = vec![
+            Label {
+                name: "label".into(),
+                value: "value".into(),
+            },
+            Label {
+                name: "label2".into(),
+                value: "value2".into(),
+            },
+        ];
+        let labels2 = vec![
+            Label {
+                name: "label".into(),
+                value: "value".into(),
+            },
+            Label {
+                name: "label2".into(),
+                value: "value3".into(),
+            },
+        ];
+        assert_ne!(LabelSet { labels: labels1 }, LabelSet { labels: labels2 })
+    }
+
+    #[test]
+    fn compare_labelset_with_quantile() {
+        let labels1 = vec![
+            Label {
+                name: "label".into(),
+                value: "value".into(),
+            },
+            Label {
+                name: "quantile".into(),
+                value: "0.5".into(),
+            },
+        ];
+        let labels2 = vec![
+            Label {
+                name: "label".into(),
+                value: "value".into(),
+            },
+            Label {
+                name: "quantile".into(),
+                value: "0.8".into(),
+            },
+        ];
+        assert_eq!(LabelSet { labels: labels1 }, LabelSet { labels: labels2 })
+    }
+
+    #[test]
+    fn compare_labelset_with_le() {
+        let labels1 = vec![
+            Label {
+                name: "label".into(),
+                value: "value".into(),
+            },
+            Label {
+                name: "le".into(),
+                value: "0.5".into(),
+            },
+        ];
+        let labels2 = vec![
+            Label {
+                name: "label".into(),
+                value: "value".into(),
+            },
+            Label {
+                name: "le".into(),
+                value: "0.8".into(),
+            },
+        ];
+        assert_eq!(LabelSet { labels: labels1 }, LabelSet { labels: labels2 })
+    }
+
+    #[test]
     fn parse_label_with_special_chars() {
         let src = "name=\"Hello! This is a test.\"";
         let label = final_parser(parse_label::<ErrorTree<Span>>)(Span::new(src))
@@ -518,13 +663,14 @@ mod test {
                     value: "value2".to_string()
                 },
             ]
+            .into()
         );
     }
 
     #[test]
     fn parse_empty_labelset_test() {
         let (_, labelset) = parse_labelset::<ErrorTree<Span>>(" ".into()).unwrap();
-        assert_eq!(labelset, vec![])
+        assert_eq!(labelset, LabelSet::new())
     }
 
     #[test]
