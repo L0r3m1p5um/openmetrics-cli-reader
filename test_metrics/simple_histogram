@@ -1,0 +1,16 @@
+# TYPE foo histogram
+foo_bucket{le="0.0"} 0
+foo_bucket{le="1e-05"} 0
+foo_bucket{le="0.0001"} 5
+foo_bucket{le="0.1"} 8
+foo_bucket{le="1.0"} 10
+foo_bucket{le="10.0"} 11
+foo_bucket{le="100000.0"} 11
+foo_bucket{le="1e+06"} 15
+foo_bucket{le="1e+23"} 16
+foo_bucket{le="1.1e+23"} 17
+foo_bucket{le="+Inf"} 17
+foo_count 17
+foo_sum 324789.3
+foo_created 1520430000.123
+# EOF

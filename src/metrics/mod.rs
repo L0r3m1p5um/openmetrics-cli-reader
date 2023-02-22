@@ -87,6 +87,14 @@ impl LabelSet {
     pub fn new() -> Self {
         LabelSet { labels: vec![] }
     }
+
+    pub fn filter_le_and_quantile(self) -> Self {
+        self.labels
+            .into_iter()
+            .filter(|label| label_filter(&label.name))
+            .collect::<Vec<Label>>()
+            .into()
+    }
 }
 
 fn label_filter(name: &str) -> bool {
@@ -431,7 +439,13 @@ fn parse_metric<'a, E: ParseError<Span<'a>>>(
                 map(|it| parse_summary_metric(it, name), |metric| (None, metric)),
                 multispace0,
             )(i),
-
+            MetricType::Histogram => terminated(
+                map(
+                    |it| parse_histogram_metric(it, name),
+                    |metric| (None, metric),
+                ),
+                multispace0,
+            )(i),
             mtype => unimplemented!("Parsing has not been implemented for metric type {mtype:?}"),
         },
         None => match metric_type {
@@ -1035,6 +1049,20 @@ mod test {
     }
 
     #[test]
+    fn parse_info_metric_test() {
+        let src = "foo_info{version=\"1.0\"} 1\n# EOF";
+        let (_, (_, metric)) =
+            parse_metric::<ErrorTree<Span>>(src.into(), None, MetricType::Info).unwrap();
+        assert_eq!(
+            metric,
+            Metric {
+                labels: serde_json::from_str("{\"version\":\"1.0\"}").unwrap(),
+                metric_points: vec![MetricValue::InfoValue(IntOrFloat::Int(1)).into()]
+            }
+        );
+    }
+
+    #[test]
     fn parse_metric_set_test() {
         let src = "# TYPE foo_seconds gauge\nfoo_seconds{label=\"value\"} 150\n# TYPE bar_seconds gauge\nbar_seconds{label=\"value\"} 50\n# EOF";
         let metric_set = final_parser(parse_metric_set::<ErrorTree<Span>>)(src.into())
@@ -1071,5 +1099,62 @@ mod test {
         };
 
         assert_eq!(metric_set, expected_metricset);
+    }
+
+    #[test]
+    fn parse_histogram_metric_test() {
+        let src = "# TYPE foo histogram\n\
+foo_bucket{le=\"0.0\"} 0\n\
+foo_bucket{le=\"1e-05\"} 0\n\
+foo_bucket{le=\"0.0001\"} 5\n\
+foo_bucket{le=\"1.0\"} 10\n\
+foo_bucket{le=\"10.0\"} 11\n\
+foo_bucket{le=\"+Inf\"} 17\n\
+foo_count 17\n\
+foo_sum 324789.3\n\
+foo_created 1520430000.123\n";
+        let (_, (name, result)) =
+            parse_metric::<ErrorTree<Span>>(src.into(), Some("foo"), MetricType::Histogram)
+                .unwrap();
+        assert_eq!(
+            result,
+            Metric {
+                labels: vec![].into(),
+                metric_points: vec![MetricPoint {
+                    timestamp: None,
+                    value: MetricValue::HistogramValue(HistogramValue {
+                        sum: Some(324789.3.into()),
+                        count: Some(17),
+                        created: Some(1520430000.123.into()),
+                        buckets: vec![
+                            Bucket {
+                                upper_bound: Some(0.0),
+                                count: 0
+                            },
+                            Bucket {
+                                upper_bound: Some(1e-05),
+                                count: 0
+                            },
+                            Bucket {
+                                upper_bound: Some(0.0001),
+                                count: 5
+                            },
+                            Bucket {
+                                upper_bound: Some(1.0),
+                                count: 10
+                            },
+                            Bucket {
+                                upper_bound: Some(10.0),
+                                count: 11
+                            },
+                            Bucket {
+                                upper_bound: Some(f64::INFINITY),
+                                count: 17
+                            },
+                        ]
+                    })
+                }]
+            }
+        );
     }
 }

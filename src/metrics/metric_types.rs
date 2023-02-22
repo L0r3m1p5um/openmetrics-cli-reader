@@ -1,3 +1,5 @@
+use std::{num::ParseFloatError, str::FromStr};
+
 use nom::{
     branch::alt,
     bytes::complete::{is_a, tag},
@@ -30,7 +32,7 @@ pub enum MetricValue {
     UnknownValue(IntOrFloat),
     GaugeValue(IntOrFloat),
     CounterValue(CounterValue),
-    // HistogramValue,
+    HistogramValue(HistogramValue),
     // StateSetValue,
     InfoValue(IntOrFloat),
     SummaryValue(SummaryValue),
@@ -47,6 +49,7 @@ impl Serialize for MetricValue {
             MetricValue::CounterValue(x) => x.serialize(serializer),
             MetricValue::InfoValue(x) => x.serialize(serializer),
             MetricValue::SummaryValue(x) => x.serialize(serializer),
+            MetricValue::HistogramValue(x) => x.serialize(serializer),
         }
     }
 }
@@ -441,6 +444,165 @@ fn parse_summary_metric_line<'a, E: ParseError<Span<'a>>>(
     Ok((i, (labelset, field, timestamp)))
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize)]
+struct HistogramValue {
+    sum: Option<IntOrFloat>,
+    count: Option<u64>,
+    created: Option<IntOrFloat>,
+    buckets: Vec<Bucket>,
+}
+
+impl From<HistogramValue> for MetricValue {
+    fn from(value: HistogramValue) -> Self {
+        MetricValue::HistogramValue(value)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Bucket {
+    pub count: u64,
+    pub upper_bound: Option<f64>,
+}
+
+#[derive(Debug, PartialEq, Clone)]
+enum HistogramField {
+    Count(u64),
+    Created(IntOrFloat),
+    Sum(IntOrFloat),
+    Bucket(Bucket),
+}
+
+fn parse_histogram_metric_line<'a, E: ParseError<Span<'a>>>(
+    i: Span<'a>,
+    name: &str,
+) -> IResult<Span<'a>, (LabelSet, HistogramField, Option<IntOrFloat>), E> {
+    let (i, (field_type, labelset)) = preceded(
+        tag(name),
+        tuple((
+            alt((
+                map(tag("_count"), |_| HistogramField::Count(0)),
+                map(tag("_created"), |_| HistogramField::Created(0.into())),
+                map(tag("_sum"), |_| HistogramField::Sum(0.into())),
+                map(tag("_bucket"), |_| {
+                    HistogramField::Bucket(Bucket {
+                        count: 0,
+                        upper_bound: None,
+                    })
+                }),
+            )),
+            terminated(parse_labelset::<E>, space0),
+        )),
+    )(i)?;
+
+    let (i, value) = match field_type {
+        HistogramField::Count(_) => terminated(
+            map(nom::character::complete::u64, {
+                |value| SummaryValueType::U64(value)
+            }),
+            opt(is_a(".0")),
+        )(i)?,
+        HistogramField::Created(_) | HistogramField::Sum(_) => map(parse_int_or_float, {
+            |value| SummaryValueType::IntOrFloat(value)
+        })(i)?,
+        HistogramField::Bucket(_) => map(
+            terminated(nom::character::complete::u64, opt(is_a(".0"))),
+            |value| SummaryValueType::U64(value),
+        )(i)?,
+    };
+    let (i, timestamp) = terminated(parse_timestamp, multispace1)(i)?;
+
+    let field = match (field_type, value) {
+        (HistogramField::Count(_), SummaryValueType::U64(x)) => Ok(HistogramField::Count(x)),
+        (HistogramField::Created(_), SummaryValueType::IntOrFloat(x)) => {
+            Ok(HistogramField::Created(x))
+        }
+        (HistogramField::Sum(_), SummaryValueType::IntOrFloat(x)) => Ok(HistogramField::Sum(x)),
+        (HistogramField::Bucket(_), SummaryValueType::U64(x)) => {
+            let threshold: &Label = labelset
+                .labels
+                .iter()
+                .find(|label| &label.name == "le")
+                .ok_or_else(|| nom_err(i))?;
+            let value: Result<f64, _> = threshold.value.parse();
+            Ok(HistogramField::Bucket(Bucket {
+                count: x,
+                upper_bound: value.map_err(|_| nom_err(i))?.into(),
+            }))
+        }
+        (_, _) => Err(nom_err(i)),
+    }?;
+    Ok((i, (labelset, field, timestamp)))
+}
+
+pub fn parse_histogram_metric<'a, E: ParseError<Span<'a>>>(
+    i: Span<'a>,
+    name: &str,
+) -> IResult<Span<'a>, (LabelSet, MetricPoint), E> {
+    let mut labels: Option<LabelSet> = None;
+    let mut histogram_value = HistogramValue {
+        count: None,
+        sum: None,
+        created: None,
+        buckets: vec![],
+    };
+    let mut timestamp: Option<IntOrFloat> = None;
+    let mut i = i;
+
+    while let Ok((i_, (field_labels, value, field_timestamp))) =
+        parse_histogram_metric_line::<E>(i, name)
+    {
+        match labels {
+            None => labels = Some(field_labels),
+            Some(ref x) => {
+                if x != &field_labels {
+                    break;
+                }
+            }
+        }
+        match timestamp {
+            None => timestamp = field_timestamp,
+            x => {
+                if x != field_timestamp {
+                    break;
+                }
+            }
+        }
+        i = i_;
+        match value {
+            HistogramField::Created(x) => histogram_value.created = Some(x),
+            HistogramField::Count(x) => histogram_value.count = Some(x),
+            HistogramField::Sum(x) => histogram_value.sum = Some(x),
+            HistogramField::Bucket(x) => histogram_value.buckets.push(x),
+        }
+    }
+    if !(matches!(
+        histogram_value,
+        HistogramValue {
+            count: None,
+            sum: None,
+            created: None,
+            buckets: _
+        }
+    ) && histogram_value.buckets.len() == 0)
+    {
+        Ok((
+            i,
+            (
+                match labels {
+                    Some(labels) => labels.filter_le_and_quantile(),
+                    None => LabelSet::new(),
+                },
+                MetricPoint {
+                    value: histogram_value.into(),
+                    timestamp,
+                },
+            ),
+        ))
+    } else {
+        Err(nom_err(i))
+    }
+}
+
 #[cfg(test)]
 mod test {
 
@@ -797,6 +959,161 @@ acme_http_router_request_seconds{path=\"/api/v1\",method=\"GET\",quantile=\"0.90
                                 quantile: 0.9,
                                 value: 234.0
                             }
+                        ]
+                    }),
+                    timestamp: None,
+                }
+            )
+        )
+    }
+
+    #[test]
+    fn parse_histogram_metric_line_count() {
+        let src = "foo_count{label=\"value\"} 100 123\n";
+        let (_, result) =
+            parse_histogram_metric_line::<ErrorTree<Span>>(src.into(), "foo").unwrap();
+        assert_eq!(
+            result,
+            (
+                vec![Label {
+                    name: "label".into(),
+                    value: "value".into()
+                }]
+                .into(),
+                HistogramField::Count(100),
+                Some(123.into()),
+            )
+        );
+    }
+
+    #[test]
+    fn parse_histogram_metric_line_sum() {
+        let src = "foo_sum{label=\"value\"} 100\n";
+        let (_, result) =
+            parse_histogram_metric_line::<ErrorTree<Span>>(src.into(), "foo").unwrap();
+        assert_eq!(
+            result,
+            (
+                vec![Label {
+                    name: "label".into(),
+                    value: "value".into()
+                }]
+                .into(),
+                HistogramField::Sum(100.into()),
+                None,
+            )
+        );
+    }
+
+    #[test]
+    fn parse_histogram_metric_line_created() {
+        let src = "foo_created{label=\"value\"} 100\n";
+        let (_, result) =
+            parse_histogram_metric_line::<ErrorTree<Span>>(src.into(), "foo").unwrap();
+        assert_eq!(
+            result,
+            (
+                vec![Label {
+                    name: "label".into(),
+                    value: "value".into()
+                }]
+                .into(),
+                HistogramField::Created(100.into()),
+                None,
+            )
+        );
+    }
+
+    #[test]
+    fn parse_histogram_metric_line_bucket() {
+        let src = "foo_bucket{label=\"value\",le=\"1.5\"} 100\n";
+        let (_, result) =
+            parse_histogram_metric_line::<ErrorTree<Span>>(src.into(), "foo").unwrap();
+        assert_eq!(
+            result,
+            (
+                vec![Label {
+                    name: "label".into(),
+                    value: "value".into()
+                }]
+                .into(),
+                HistogramField::Bucket(Bucket {
+                    count: 100,
+                    upper_bound: Some((1.5))
+                }),
+                None,
+            )
+        );
+    }
+
+    #[test]
+    fn parse_histogram_metric_line_bucket_inf() {
+        let src = "foo_bucket{label=\"value\",le=\"+Inf\"} 100\n";
+        let (_, result) =
+            parse_histogram_metric_line::<ErrorTree<Span>>(src.into(), "foo").unwrap();
+        assert_eq!(
+            result,
+            (
+                vec![Label {
+                    name: "label".into(),
+                    value: "value".into()
+                }]
+                .into(),
+                HistogramField::Bucket(Bucket {
+                    count: 100,
+                    upper_bound: Some(f64::INFINITY)
+                }),
+                None,
+            )
+        );
+    }
+
+    #[test]
+    fn parse_histogram_metric_test() {
+        let src = "foo_bucket{le=\"0.0\"} 0\n\
+foo_bucket{le=\"1e-05\"} 0\n\
+foo_bucket{le=\"0.0001\"} 5\n\
+foo_bucket{le=\"1.0\"} 10\n\
+foo_bucket{le=\"10.0\"} 11\n\
+foo_bucket{le=\"+Inf\"} 17\n\
+foo_count 17\n\
+foo_sum 324789.3\n\
+foo_created 1520430000.123\n";
+        let (_, result) = parse_histogram_metric::<ErrorTree<Span>>(src.into(), "foo").unwrap();
+        assert_eq!(
+            result,
+            (
+                vec![].into(),
+                MetricPoint {
+                    value: MetricValue::HistogramValue(HistogramValue {
+                        sum: Some(324789.3.into()),
+                        count: Some(17),
+                        created: Some(1520430000.123.into()),
+                        buckets: vec![
+                            Bucket {
+                                upper_bound: Some(0.0),
+                                count: 0
+                            },
+                            Bucket {
+                                upper_bound: Some(1e-05),
+                                count: 0
+                            },
+                            Bucket {
+                                upper_bound: Some(0.0001),
+                                count: 5
+                            },
+                            Bucket {
+                                upper_bound: Some(1.0),
+                                count: 10
+                            },
+                            Bucket {
+                                upper_bound: Some(10.0),
+                                count: 11
+                            },
+                            Bucket {
+                                upper_bound: Some(f64::INFINITY),
+                                count: 17
+                            },
                         ]
                     }),
                     timestamp: None,
