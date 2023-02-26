@@ -10,14 +10,15 @@ use tokio::{
 use crate::metrics::{parse_metric_set, render_error, Label, MetricSet, Span};
 
 pub async fn get_metricset(url: Arc<String>, client: Arc<Client>) -> color_eyre::Result<MetricSet> {
-    let response = client.get(url.as_str()).send().await?.text().await?;
+    let (label, url) = split_url(&url);
+    let response = client.get(url).send().await?.text().await?;
     let src = response.clone();
     let metric_set = final_parser(|it| {
         parse_metric_set::<ErrorTree<Span>>(
             it,
             &Some(Label {
                 name: "metrics_source".into(),
-                value: url.to_string(),
+                value: label.to_string(),
             }),
         )
     })(response.as_str().into())
@@ -26,6 +27,13 @@ pub async fn get_metricset(url: Arc<String>, client: Arc<Client>) -> color_eyre:
         Err(MetricsParseError {})
     })?;
     Ok(metric_set)
+}
+
+fn split_url(url: &str) -> (&str, &str) {
+    match url.split_once(":=") {
+        Some((label, url)) => (label, url),
+        None => (url, url),
+    }
 }
 
 pub async fn merge_metricsets(
