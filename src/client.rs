@@ -88,7 +88,7 @@ impl Error for MetricsParseError {}
 pub fn create_client() -> Result<Client, reqwest::Error> {
     let mut headers = reqwest::header::HeaderMap::new();
     headers.append(
-        reqwest::header::CONTENT_TYPE,
+        reqwest::header::ACCEPT,
         "application/openmetrics-text; version=1.0.0; charset=utf-8"
             .parse()
             .unwrap(),

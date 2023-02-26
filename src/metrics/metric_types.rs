@@ -865,6 +865,27 @@ mod test {
         );
     }
 
+
+    #[test]
+    fn parse_counter_metric_sci() {
+        let src = "foo_seconds_total 1.43739768E8\nt";
+        let (_, metric) =
+            parse_counter_metric::<ErrorTree<Span>>(src.into(), "foo_seconds").unwrap();
+        assert_eq!(
+            metric,
+            (
+                LabelSet::new(),
+                MetricPoint {
+                    value: MetricValue::CounterValue(CounterValue {
+                        total: 143739768.0.into(),
+                        created: None
+                    }),
+                    timestamp: None
+                }
+            )
+        );
+    }
+
     #[test]
     fn parse_counter_metric_with_timestamp() {
         let src = "foo_seconds_total 100 123\nfoo_seconds_total 200 456\nt";
