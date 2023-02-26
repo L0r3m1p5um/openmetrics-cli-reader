@@ -170,7 +170,7 @@ fn render_base_error(
     GraphicalReportHandler::new()
         .render_report(&mut s, &err)
         .unwrap();
-    println!("{s}");
+    eprintln!("{s}");
 }
 
 fn parse_label<'a, E: ParseError<Span<'a>>>(i: Span<'a>) -> IResult<Span<'a>, Label, E> {
@@ -292,12 +292,12 @@ fn parse_metric_family<'a, E: ParseError<Span<'a>>>(
 
 fn parse_metrictype<'a, E: ParseError<Span<'a>>>(i: Span<'a>) -> IResult<Span<'a>, MetricType, E> {
     alt((
+        value(MetricType::GaugeHistogram, tag("gaugehistogram")),
         value(MetricType::Gauge, tag("gauge")),
         value(MetricType::Counter, tag("counter")),
-        value(MetricType::StateSet, tag("state_set")),
+        value(MetricType::StateSet, tag("stateset")),
         value(MetricType::Info, tag("info")),
         value(MetricType::Histogram, tag("histogram")),
-        value(MetricType::GagueHistogram, tag("gague_histogram")),
         value(MetricType::Summary, tag("summary")),
     ))(i)
 }
@@ -446,6 +446,20 @@ fn parse_metric<'a, E: ParseError<Span<'a>>>(
                 ),
                 multispace0,
             )(i),
+            MetricType::StateSet => terminated(
+                map(
+                    |it| parse_stateset_metric(it, name),
+                    |metric| (None, metric),
+                ),
+                multispace0,
+            )(i),
+            MetricType::GaugeHistogram => terminated(
+                map(
+                    |it| parse_histogram_metric(it, name),
+                    |metric| (None, metric),
+                ),
+                multispace0,
+            )(i),
             mtype => unimplemented!("Parsing has not been implemented for metric type {mtype:?}"),
         },
         None => match metric_type {
@@ -456,7 +470,7 @@ fn parse_metric<'a, E: ParseError<Span<'a>>>(
                 ),
                 multispace0,
             )(i),
-            _ => unimplemented!(),
+            _ => unimplemented!("Metric type cannot be parsed without a known name"),
         },
     } {
         match metric_labels {
@@ -493,11 +507,14 @@ fn parse_metric<'a, E: ParseError<Span<'a>>>(
             ),
         ))
     } else {
-        Err(nom_err(i))
+        Err(nom_err(i, None))
     }
 }
 
-fn nom_err<'a, E: ParseError<Span<'a>>>(i: Span<'a>) -> nom::Err<E> {
+fn nom_err<'a, E: ParseError<Span<'a>>>(i: Span<'a>, message: Option<&str>) -> nom::Err<E> {
+    if let Some(message) = message {
+        eprintln!("{message}");
+    }
     nom::Err::Error(E::from_error_kind(i, nom::error::ErrorKind::Fail))
 }
 
@@ -1052,7 +1069,7 @@ mod test {
     fn parse_info_metric_test() {
         let src = "foo_info{version=\"1.0\"} 1\n# EOF";
         let (_, (_, metric)) =
-            parse_metric::<ErrorTree<Span>>(src.into(), None, MetricType::Info).unwrap();
+            parse_metric::<ErrorTree<Span>>(src.into(), "foo".into(), MetricType::Info).unwrap();
         assert_eq!(
             metric,
             Metric {
@@ -1103,8 +1120,7 @@ mod test {
 
     #[test]
     fn parse_histogram_metric_test() {
-        let src = "# TYPE foo histogram\n\
-foo_bucket{le=\"0.0\"} 0\n\
+        let src = "foo_bucket{le=\"0.0\"} 0\n\
 foo_bucket{le=\"1e-05\"} 0\n\
 foo_bucket{le=\"0.0001\"} 5\n\
 foo_bucket{le=\"1.0\"} 10\n\
@@ -1119,14 +1135,14 @@ foo_created 1520430000.123\n";
         assert_eq!(
             result,
             Metric {
-                labels: vec![].into(),
+                labels: HashMap::new(),
                 metric_points: vec![MetricPoint {
                     timestamp: None,
-                    value: MetricValue::HistogramValue(HistogramValue {
-                        sum: Some(324789.3.into()),
-                        count: Some(17),
-                        created: Some(1520430000.123.into()),
-                        buckets: vec![
+                    value: MetricValue::HistogramValue(HistogramValue::new(
+                        Some(324789.3.into()),
+                        Some(17),
+                        Some(1520430000.123.into()),
+                        vec![
                             Bucket {
                                 upper_bound: Some(0.0),
                                 count: 0
@@ -1152,9 +1168,86 @@ foo_created 1520430000.123\n";
                                 count: 17
                             },
                         ]
-                    })
+                    ))
                 }]
             }
         );
+    }
+
+    #[test]
+    fn parse_gaugehistogram_metric_test() {
+        let src = "foo_bucket{le=\"0.0\"} 0\n\
+foo_bucket{le=\"1e-05\"} 0\n\
+foo_bucket{le=\"0.0001\"} 5\n\
+foo_bucket{le=\"1.0\"} 10\n\
+foo_bucket{le=\"10.0\"} 11\n\
+foo_bucket{le=\"+Inf\"} 17\n\
+foo_gcount 17\n\
+foo_gsum 324789.3\n\
+foo_created 1520430000.123\n";
+        let (_, (name, result)) =
+            parse_metric::<ErrorTree<Span>>(src.into(), Some("foo"), MetricType::GaugeHistogram)
+                .unwrap();
+        assert_eq!(
+            result,
+            Metric {
+                labels: HashMap::new(),
+                metric_points: vec![MetricPoint {
+                    timestamp: None,
+                    value: MetricValue::HistogramValue(HistogramValue::new(
+                        Some(324789.3.into()),
+                        Some(17),
+                        Some(1520430000.123.into()),
+                        vec![
+                            Bucket {
+                                upper_bound: Some(0.0),
+                                count: 0
+                            },
+                            Bucket {
+                                upper_bound: Some(1e-05),
+                                count: 0
+                            },
+                            Bucket {
+                                upper_bound: Some(0.0001),
+                                count: 5
+                            },
+                            Bucket {
+                                upper_bound: Some(1.0),
+                                count: 10
+                            },
+                            Bucket {
+                                upper_bound: Some(10.0),
+                                count: 11
+                            },
+                            Bucket {
+                                upper_bound: Some(f64::INFINITY),
+                                count: 17
+                            },
+                        ]
+                    ))
+                }]
+            }
+        );
+    }
+
+    #[test]
+    fn parse_stateset_test() {
+        let src = "foo{foo=\"a\"} 0\nfoo{foo=\"bb\"} 1\nfoo{foo=\"ccc\"} 0\n";
+        let (_, (_, metric)) =
+            parse_metric::<ErrorTree<Span>>(src.into(), Some("foo"), MetricType::StateSet).unwrap();
+        let mut states = HashMap::new();
+        states.insert("a".to_string(), false);
+        states.insert("bb".to_string(), true);
+        states.insert("ccc".to_string(), false);
+        assert_eq!(
+            metric,
+            Metric {
+                labels: HashMap::new(),
+                metric_points: vec![MetricPoint {
+                    timestamp: None,
+                    value: MetricValue::StateSetValue(StateSetValue::new(states))
+                }]
+            }
+        )
     }
 }

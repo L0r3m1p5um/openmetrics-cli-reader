@@ -1,0 +1,14 @@
+# TYPE foo stateset
+foo{entity="controller",foo="a"} 1.0 123
+foo{entity="controller",foo="bb"} 0.0 123
+foo{entity="controller",foo="ccc"} 0.0 123
+foo{entity="controller",foo="a"} 1.0 456
+foo{entity="controller",foo="bb"} 1.0 456
+foo{entity="controller",foo="ccc"} 0.0 456
+foo{entity="replica",foo="a"} 1.0 123
+foo{entity="replica",foo="bb"} 0.0 123
+foo{entity="replica",foo="ccc"} 1.0 123
+foo{entity="replica",foo="a"} 1.0 456
+foo{entity="replica",foo="bb"} 1.0 456
+foo{entity="replica",foo="ccc"} 1.0 456
+# EOF

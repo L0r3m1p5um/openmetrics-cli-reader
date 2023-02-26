@@ -1,0 +1,9 @@
+# TYPE baz gaugehistogram
+baz_bucket{le="0.01"} 20.0
+baz_bucket{le="0.1"} 25.0
+baz_bucket{le="1"} 34.0
+baz_bucket{le="10"} 34.0
+baz_bucket{le="+Inf"} 42.0
+baz_gcount 42.0
+baz_gsum 3289.3
+# EOF

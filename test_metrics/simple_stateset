@@ -1,0 +1,5 @@
+# TYPE foo stateset
+foo{foo="a"} 0
+foo{foo="bb"} 1
+foo{foo="ccc"} 0
+# EOF

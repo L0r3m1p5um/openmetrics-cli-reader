@@ -61,4 +61,40 @@ acme_http_router_request_seconds_created{path="/api/v2",method="POST"} 160528132
 acme_http_router_request_seconds{path="/api/v2",method="POST",quantile="0.5"} 1.5
 acme_http_router_request_seconds{path="/api/v2",method="POST",quantile="0.95"} 2.4
 acme_http_router_request_seconds{path="/api/v2",method="POST",quantile="0.99"} 3.1
+# TYPE foo histogram
+foo_bucket{le="0.0"} 0
+foo_bucket{le="1e-05"} 0
+foo_bucket{le="0.0001"} 5
+foo_bucket{le="0.1"} 8
+foo_bucket{le="1.0"} 10
+foo_bucket{le="10.0"} 11
+foo_bucket{le="100000.0"} 11
+foo_bucket{le="1e+06"} 15
+foo_bucket{le="1e+23"} 16
+foo_bucket{le="1.1e+23"} 17
+foo_bucket{le="+Inf"} 17
+foo_count 17
+foo_sum 324789.3
+foo_created 1520430000.123
+# TYPE bar stateset
+bar{entity="controller",bar="a"} 1.0 123
+bar{entity="controller",bar="bb"} 0.0 123
+bar{entity="controller",bar="ccc"} 0.0 123
+bar{entity="controller",bar="a"} 1.0 456
+bar{entity="controller",bar="bb"} 1.0 456
+bar{entity="controller",bar="ccc"} 0.0 456
+bar{entity="replica",bar="a"} 1.0 123
+bar{entity="replica",bar="bb"} 0.0 123
+bar{entity="replica",bar="ccc"} 1.0 123
+bar{entity="replica",bar="a"} 1.0 456
+bar{entity="replica",bar="bb"} 1.0 456
+bar{entity="replica",bar="ccc"} 1.0 456
+# TYPE baz gaugehistogram
+baz_bucket{le="0.01"} 20.0
+baz_bucket{le="0.1"} 25.0
+baz_bucket{le="1"} 34.0
+baz_bucket{le="10"} 34.0
+baz_bucket{le="+Inf"} 42.0
+baz_gcount 42.0
+baz_gsum 3289.3
 # EOF

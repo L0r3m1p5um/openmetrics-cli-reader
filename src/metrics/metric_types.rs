@@ -1,4 +1,4 @@
-use std::{num::ParseFloatError, str::FromStr};
+use std::{collections::HashMap, hash::Hash};
 
 use nom::{
     branch::alt,
@@ -23,7 +23,7 @@ pub enum MetricType {
     StateSet,
     Info,
     Histogram,
-    GagueHistogram,
+    GaugeHistogram,
     Summary,
 }
 
@@ -33,7 +33,7 @@ pub enum MetricValue {
     GaugeValue(IntOrFloat),
     CounterValue(CounterValue),
     HistogramValue(HistogramValue),
-    // StateSetValue,
+    StateSetValue(StateSetValue),
     InfoValue(IntOrFloat),
     SummaryValue(SummaryValue),
 }
@@ -50,6 +50,7 @@ impl Serialize for MetricValue {
             MetricValue::InfoValue(x) => x.serialize(serializer),
             MetricValue::SummaryValue(x) => x.serialize(serializer),
             MetricValue::HistogramValue(x) => x.serialize(serializer),
+            MetricValue::StateSetValue(x) => x.serialize(serializer),
         }
     }
 }
@@ -138,7 +139,7 @@ pub fn parse_counter_metric<'a, E: ParseError<Span<'a>>>(
                 ),
             ),
         )),
-        None => Err(nom_err(i)),
+        None => Err(nom_err(i, None)),
     }
 }
 
@@ -231,6 +232,25 @@ impl From<f64> for IntOrFloat {
     }
 }
 
+impl TryFrom<IntOrFloat> for bool {
+    type Error = ();
+
+    fn try_from(value: IntOrFloat) -> Result<Self, Self::Error> {
+        match value {
+            IntOrFloat::Int(x) => match x {
+                1 => Ok(true),
+                0 => Ok(false),
+                _ => Err(()),
+            },
+            IntOrFloat::Float(x) => match x {
+                1.0 => Ok(true),
+                0.0 => Ok(false),
+                _ => Err(()),
+            },
+        }
+    }
+}
+
 impl Serialize for IntOrFloat {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -253,6 +273,12 @@ fn parse_int_or_float<'a, E: ParseError<Span<'a>>>(
         ),
         map(double, |value| value.into()),
     ))(i)
+}
+
+fn parse_bool<'a, E: ParseError<Span<'a>>>(i: Span<'a>) -> IResult<Span<'a>, bool, E> {
+    let (i_, result): (Span, Result<bool, ()>) = map(parse_int_or_float, |x| x.try_into())(i)?;
+    let value = result.map_err(|_| nom_err(i, Some("Value could not be parsed as bool")))?;
+    Ok((i_, value))
 }
 
 pub fn parse_timestamp<'a, E: ParseError<Span<'a>>>(
@@ -383,7 +409,7 @@ pub fn parse_summary_metric<'a, E: ParseError<Span<'a>>>(
             ),
         ))
     } else {
-        Err(nom_err(i))
+        Err(nom_err(i, None))
     }
 }
 
@@ -432,24 +458,43 @@ fn parse_summary_metric_line<'a, E: ParseError<Span<'a>>>(
                 .labels
                 .iter()
                 .find(|label| &label.name == "quantile")
-                .ok_or_else(|| nom_err(i))?;
+                .ok_or_else(|| nom_err(i, Some("quantile label must be present")))?;
             let value: Result<f64, _> = quantile.value.parse();
             Ok(SummaryField::Quantile(Quantile {
-                quantile: quantile.value.parse().map_err(|err| nom_err(i))?,
+                quantile: quantile
+                    .value
+                    .parse()
+                    .map_err(|err| nom_err(i, Some("Quantile value must be a float")))?,
                 value: x,
             }))
         }
-        (_, _) => Err(nom_err(i)),
+        (_, _) => Err(nom_err(i, Some("Summary field and value do not match"))),
     }?;
     Ok((i, (labelset, field, timestamp)))
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
-struct HistogramValue {
+pub struct HistogramValue {
     sum: Option<IntOrFloat>,
     count: Option<u64>,
     created: Option<IntOrFloat>,
     buckets: Vec<Bucket>,
+}
+
+impl HistogramValue {
+    pub fn new(
+        sum: Option<IntOrFloat>,
+        count: Option<u64>,
+        created: Option<IntOrFloat>,
+        buckets: Vec<Bucket>,
+    ) -> Self {
+        HistogramValue {
+            sum,
+            count,
+            created,
+            buckets,
+        }
+    }
 }
 
 impl From<HistogramValue> for MetricValue {
@@ -480,9 +525,13 @@ fn parse_histogram_metric_line<'a, E: ParseError<Span<'a>>>(
         tag(name),
         tuple((
             alt((
-                map(tag("_count"), |_| HistogramField::Count(0)),
+                map(alt((tag("_count"), tag("_gcount"))), |_| {
+                    HistogramField::Count(0)
+                }),
                 map(tag("_created"), |_| HistogramField::Created(0.into())),
-                map(tag("_sum"), |_| HistogramField::Sum(0.into())),
+                map(alt((tag("_sum"), tag("_gsum"))), |_| {
+                    HistogramField::Sum(0.into())
+                }),
                 map(tag("_bucket"), |_| {
                     HistogramField::Bucket(Bucket {
                         count: 0,
@@ -522,14 +571,19 @@ fn parse_histogram_metric_line<'a, E: ParseError<Span<'a>>>(
                 .labels
                 .iter()
                 .find(|label| &label.name == "le")
-                .ok_or_else(|| nom_err(i))?;
+                .ok_or_else(|| nom_err(i, Some("Histogram bucket requires le label")))?;
             let value: Result<f64, _> = threshold.value.parse();
             Ok(HistogramField::Bucket(Bucket {
                 count: x,
-                upper_bound: value.map_err(|_| nom_err(i))?.into(),
+                upper_bound: value
+                    .map_err(|_| nom_err(i, Some("Histogram bucket value type doesn't match")))?
+                    .into(),
             }))
         }
-        (_, _) => Err(nom_err(i)),
+        (_, _) => Err(nom_err(
+            i,
+            Some("Histogram field type and value do not match"),
+        )),
     }?;
     Ok((i, (labelset, field, timestamp)))
 }
@@ -599,18 +653,125 @@ pub fn parse_histogram_metric<'a, E: ParseError<Span<'a>>>(
             ),
         ))
     } else {
-        Err(nom_err(i))
+        Err(nom_err(i, None))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StateSetValue {
+    states: HashMap<String, bool>,
+}
+
+impl Serialize for StateSetValue {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        self.states.serialize(serializer)
+    }
+}
+
+impl StateSetValue {
+    pub fn new(states: HashMap<String, bool>) -> Self {
+        StateSetValue { states }
+    }
+}
+
+impl From<StateSetValue> for MetricValue {
+    fn from(value: StateSetValue) -> Self {
+        MetricValue::StateSetValue(value)
+    }
+}
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+struct State {
+    enabled: bool,
+    name: String,
+}
+
+fn parse_state<'a, E: ParseError<Span<'a>>>(
+    i: Span<'a>,
+    name: &str,
+) -> IResult<Span<'a>, (LabelSet, State, Option<IntOrFloat>), E> {
+    let (i, labelset) = preceded(tag(name), terminated(parse_labelset::<E>, space0))(i)?;
+
+    let (state_name, labels): (Vec<Label>, Vec<Label>) = labelset
+        .labels
+        .into_iter()
+        .partition(|label| label.name == name);
+    let labelset = labels.into();
+    let state_name = state_name
+        .into_iter()
+        .next()
+        .ok_or_else(|| nom_err(i, Some("State requires name label")))?
+        .value;
+    let (i, enabled): (Span, bool) = preceded(space0, parse_bool)(i)?;
+    let state = State {
+        enabled,
+        name: state_name,
+    };
+    let (i, timestamp) = terminated(parse_timestamp, multispace1)(i)?;
+    Ok((i, (labelset, state, timestamp)))
+}
+
+pub fn parse_stateset_metric<'a, E: ParseError<Span<'a>>>(
+    i: Span<'a>,
+    name: &str,
+) -> IResult<Span<'a>, (LabelSet, MetricPoint), E> {
+    let mut labels: Option<LabelSet> = None;
+    let mut states: HashMap<String, bool> = HashMap::new();
+    let mut timestamp: Option<IntOrFloat> = None;
+    let mut i = i;
+
+    while let Ok((i_, (field_labels, state, field_timestamp))) = parse_state::<E>(i, name) {
+        match labels {
+            None => labels = Some(field_labels),
+            Some(ref x) => {
+                if x != &field_labels {
+                    break;
+                }
+            }
+        }
+        match timestamp {
+            None => timestamp = field_timestamp,
+            x => {
+                if x != field_timestamp {
+                    break;
+                }
+            }
+        }
+        i = i_;
+        states.insert(state.name, state.enabled);
+    }
+    if !states.is_empty() {
+        Ok((
+            i,
+            (
+                match labels {
+                    Some(labels) => labels.filter_le_and_quantile(),
+                    None => LabelSet::new(),
+                },
+                MetricPoint {
+                    value: StateSetValue { states }.into(),
+                    timestamp,
+                },
+            ),
+        ))
+    } else {
+        Err(nom_err(i, None))
     }
 }
 
 #[cfg(test)]
 mod test {
 
-    use crate::metrics::{parse_metric, render_error, Label};
+    use std::vec;
+
+    use crate::metrics::Label;
 
     use super::*;
 
-    use nom_supreme::{error::ErrorTree, final_parser::final_parser};
+    use nom_supreme::error::ErrorTree;
 
     #[test]
     fn parse_int_to_int_or_float() {
@@ -1117,6 +1278,129 @@ foo_created 1520430000.123\n";
                         ]
                     }),
                     timestamp: None,
+                }
+            )
+        )
+    }
+
+    #[test]
+    fn parse_gaugehistogram_metric_test() {
+        let src = "foo_bucket{le=\"0.0\"} 0\n\
+foo_bucket{le=\"1e-05\"} 0\n\
+foo_bucket{le=\"0.0001\"} 5\n\
+foo_bucket{le=\"1.0\"} 10\n\
+foo_bucket{le=\"10.0\"} 11\n\
+foo_bucket{le=\"+Inf\"} 17\n\
+foo_gcount 17\n\
+foo_gsum 324789.3\n";
+        let (_, result) = parse_histogram_metric::<ErrorTree<Span>>(src.into(), "foo").unwrap();
+        assert_eq!(
+            result,
+            (
+                vec![].into(),
+                MetricPoint {
+                    value: MetricValue::HistogramValue(HistogramValue {
+                        sum: Some(324789.3.into()),
+                        count: Some(17),
+                        created: None,
+                        buckets: vec![
+                            Bucket {
+                                upper_bound: Some(0.0),
+                                count: 0
+                            },
+                            Bucket {
+                                upper_bound: Some(1e-05),
+                                count: 0
+                            },
+                            Bucket {
+                                upper_bound: Some(0.0001),
+                                count: 5
+                            },
+                            Bucket {
+                                upper_bound: Some(1.0),
+                                count: 10
+                            },
+                            Bucket {
+                                upper_bound: Some(10.0),
+                                count: 11
+                            },
+                            Bucket {
+                                upper_bound: Some(f64::INFINITY),
+                                count: 17
+                            },
+                        ]
+                    }),
+                    timestamp: None,
+                }
+            )
+        )
+    }
+
+    #[test]
+    fn int_try_into_false() {
+        let result: bool = IntOrFloat::Int(0).try_into().unwrap();
+        assert_eq!(false, result)
+    }
+
+    #[test]
+    fn int_try_into_true() {
+        let result: bool = IntOrFloat::Int(1).try_into().unwrap();
+        assert_eq!(true, result)
+    }
+
+    #[test]
+    fn float_try_into_false() {
+        let result: bool = IntOrFloat::Float(0.0).try_into().unwrap();
+        assert_eq!(false, result)
+    }
+
+    #[test]
+    fn float_try_into_true() {
+        let result: bool = IntOrFloat::Float(1.0).try_into().unwrap();
+        assert_eq!(true, result)
+    }
+
+    #[test]
+    fn parse_state_test() {
+        let src = "foo{label=\"value\",foo=\"a\"} 1\n";
+        let (_, result) = parse_state::<ErrorTree<Span>>(src.into(), "foo").unwrap();
+        assert_eq!(
+            result,
+            (
+                vec![Label {
+                    name: "label".into(),
+                    value: "value".into()
+                }]
+                .into(),
+                State {
+                    name: "a".into(),
+                    enabled: true,
+                },
+                None,
+            )
+        );
+    }
+
+    #[test]
+    fn parse_stateset_test() {
+        let src = "foo{foo=\"a\",label=\"value\"} 0\nfoo{foo=\"bb\",label=\"value\"} 1\nfoo{foo=\"ccc\",label=\"value\"} 0\n";
+        let (_, result) = parse_stateset_metric::<ErrorTree<Span>>(src.into(), "foo").unwrap();
+        let mut states = HashMap::new();
+        states.insert("a".to_string(), false);
+        states.insert("bb".to_string(), true);
+        states.insert("ccc".to_string(), false);
+        assert_eq!(
+            result,
+            (
+                LabelSet {
+                    labels: vec![Label {
+                        name: "label".into(),
+                        value: "value".into()
+                    }]
+                },
+                MetricPoint {
+                    timestamp: None,
+                    value: MetricValue::StateSetValue(StateSetValue { states })
                 }
             )
         )
