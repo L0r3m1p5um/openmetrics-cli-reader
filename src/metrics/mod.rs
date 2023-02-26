@@ -25,9 +25,17 @@ use serde::Serialize;
 
 const METRIC_NAME_CHARS: &str = "abcdefghijklmnopqrstuvwxyz_";
 
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct MetricSet {
     pub metric_families: Vec<MetricFamily>,
+}
+
+impl Serialize for MetricSet {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer {
+        self.metric_families.serialize(serializer)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
