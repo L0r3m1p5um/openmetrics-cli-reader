@@ -1,33 +1,67 @@
-use std::{error::Error, fmt::Display};
+use std::{error::Error, fmt::Display, sync::Arc};
 
 use nom_supreme::{error::ErrorTree, final_parser::final_parser};
 use reqwest::Client;
-use tokio::time::{sleep, Duration};
+use tokio::{
+    task::JoinSet,
+    time::{sleep, Duration},
+};
 
-use crate::metrics::{parse_metric_set, render_error, MetricSet, Span};
+use crate::metrics::{parse_metric_set, render_error, Label, MetricSet, Span};
 
-pub async fn get_metricset(url: &str, client: & Client) -> color_eyre::Result<MetricSet> {
-    let response = client.get(url).send().await?.text().await?;
+pub async fn get_metricset(url: Arc<String>, client: Arc<Client>) -> color_eyre::Result<MetricSet> {
+    let response = client.get(url.as_str()).send().await?.text().await?;
     let src = response.clone();
-    let metric_set =
-        final_parser(|it| parse_metric_set::<ErrorTree<Span>>(it, &None))(response.as_str().into())
-            .or_else(|e| {
-                render_error(&src, e);
-                Err(MetricsParseError {})
-            })?;
+    let metric_set = final_parser(|it| {
+        parse_metric_set::<ErrorTree<Span>>(
+            it,
+            &Some(Label {
+                name: "metrics_source".into(),
+                value: url.to_string(),
+            }),
+        )
+    })(response.as_str().into())
+    .or_else(|e| {
+        render_error(&src, e);
+        Err(MetricsParseError {})
+    })?;
     Ok(metric_set)
 }
 
-pub async fn print_metrics(url: &str, interval: Option<Duration>) -> color_eyre::Result<()> {
-    let client = create_client()?;
+pub async fn merge_metricsets(
+    urls: &Vec<Arc<String>>,
+    client: Arc<Client>,
+) -> color_eyre::Result<MetricSet> {
+    let mut handles = JoinSet::new();
+    for url in urls {
+        handles.spawn(get_metricset(url.clone(), client.clone()));
+    }
+    let mut metric_families = vec![];
+    while let Some(res) = handles.join_next().await {
+        let mut metrics = res??.metric_families;
+        metric_families.append(&mut metrics);
+    }
+    Ok(MetricSet { metric_families })
+}
+
+pub async fn print_metrics(
+    urls: Vec<String>,
+    interval: Option<Duration>,
+) -> color_eyre::Result<()> {
+    let client = Arc::new(create_client()?);
+    let urls: Vec<Arc<String>> = urls.into_iter().map(|url| Arc::new(url)).collect();
     match interval {
-        None => println!("{}", serde_json::to_string(&get_metricset(url, &client).await?)?),
-        Some(interval) => {
-            loop {
-                println!("{}", serde_json::to_string(&get_metricset(url, &client).await?)?);
-                sleep(interval).await;
-            }
-        }
+        None => println!(
+            "{}",
+            serde_json::to_string(&merge_metricsets(&urls.clone(), client.clone()).await?)?
+        ),
+        Some(interval) => loop {
+            println!(
+                "{}",
+                serde_json::to_string(&merge_metricsets(&urls.clone(), client.clone()).await?)?
+            );
+            sleep(interval).await;
+        },
     }
     Ok(())
 }

@@ -27,7 +27,7 @@ const METRIC_NAME_CHARS: &str = "abcdefghijklmnopqrstuvwxyz_";
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct MetricSet {
-    metric_families: Vec<MetricFamily>,
+    pub metric_families: Vec<MetricFamily>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
