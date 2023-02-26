@@ -23,7 +23,7 @@ use nom_locate::LocatedSpan;
 use nom_supreme::error::{BaseErrorKind, ErrorTree, GenericErrorTree};
 use serde::Serialize;
 
-const METRIC_NAME_CHARS: &str = "abcdefghijklmnopqrstuvwxyz_";
+const METRIC_NAME_CHARS: &str = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_1234567890";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct MetricSet {
@@ -183,7 +183,7 @@ fn render_base_error(
 
 fn parse_label<'a, E: ParseError<Span<'a>>>(i: Span<'a>) -> IResult<Span<'a>, Label, E> {
     let (input, (name, _, value)) = tuple((
-        alphanumeric1,
+        is_a(METRIC_NAME_CHARS),
         tag("="),
         delimited(
             tag("\""),
@@ -206,9 +206,9 @@ fn parse_labelset<'a, E: ParseError<Span<'a>>>(i: Span<'a>) -> IResult<Span<'a>,
             delimited(
                 tag("{"),
                 separated_list0(tag(","), parse_label::<E>),
-                tag("}"),
+                tuple((opt(tag(",")),tag("}"))),
             ),
-            { |labels| labels.into() },
+            |labels| labels.into(),
         ),
         map(tag(" "), |_| LabelSet { labels: vec![] }),
     ))(i)
@@ -716,6 +716,29 @@ mod test {
             .into()
         );
     }
+
+    #[test]
+    fn parse_labelset_trailing_comma() {
+        let (input, labelset) =
+            parse_labelset::<ErrorTree<Span>>(Span::new("{name1=\"value1\",name2=\"value2\",}test"))
+                .unwrap();
+        assert_eq!(*input.fragment(), "test");
+        assert_eq!(
+            labelset,
+            vec![
+                Label {
+                    name: "name1".to_string(),
+                    value: "value1".to_string()
+                },
+                Label {
+                    name: "name2".to_string(),
+                    value: "value2".to_string()
+                },
+            ]
+            .into()
+        );
+    }
+
 
     #[test]
     fn parse_empty_labelset_test() {
