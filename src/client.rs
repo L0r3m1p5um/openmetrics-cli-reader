@@ -10,7 +10,7 @@ pub async fn get_metricset(url: &str, client: & Client) -> color_eyre::Result<Me
     let response = client.get(url).send().await?.text().await?;
     let src = response.clone();
     let metric_set =
-        final_parser(|it| parse_metric_set::<ErrorTree<Span>>(it))(response.as_str().into())
+        final_parser(|it| parse_metric_set::<ErrorTree<Span>>(it, &None))(response.as_str().into())
             .or_else(|e| {
                 render_error(&src, e);
                 Err(MetricsParseError {})

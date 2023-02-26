@@ -208,11 +208,12 @@ fn parse_labelset<'a, E: ParseError<Span<'a>>>(i: Span<'a>) -> IResult<Span<'a>,
 
 pub fn parse_metric_set<'a, E: ParseError<Span<'a>>>(
     i: Span<'a>,
+    source_label: &Option<Label>,
 ) -> IResult<Span<'a>, MetricSet, E> {
     let mut metric_families = vec![];
     let mut i = i;
     while let Ok((input, (metric_family, eof))) = tuple((
-        parse_metric_family::<ErrorTree<Span<'a>>>,
+        { |it| parse_metric_family::<ErrorTree<Span<'a>>>(it, source_label) },
         opt(tuple((
             tag("# EOF"),
             nom::bytes::complete::take_while(|_| true),
@@ -231,6 +232,7 @@ pub fn parse_metric_set<'a, E: ParseError<Span<'a>>>(
 
 fn parse_metric_family<'a, E: ParseError<Span<'a>>>(
     i: Span<'a>,
+    source_label: &Option<Label>,
 ) -> IResult<Span<'a>, MetricFamily, E> {
     let (mut i, _) = multispace0(i)?;
 
@@ -261,7 +263,7 @@ fn parse_metric_family<'a, E: ParseError<Span<'a>>>(
 
     let mut metrics = vec![];
     while let Ok((input, (line_name, metric))) =
-        parse_metric::<ErrorTree<Span<'a>>>(i, metric_family_name, metric_family_type)
+        parse_metric::<ErrorTree<Span<'a>>>(i, metric_family_name, source_label, metric_family_type)
     {
         if metric_family_name == None {
             if let Some(name) = line_name {
@@ -407,6 +409,7 @@ fn parse_type_metadata<'a, E: ParseError<Span<'a>>>(
 fn parse_metric<'a, E: ParseError<Span<'a>>>(
     i: Span<'a>,
     name: Option<&str>,
+    source_label: &Option<Label>,
     metric_type: MetricType,
 ) -> IResult<Span<'a>, (Option<Span<'a>>, Metric), E> {
     let mut i = i;
@@ -494,6 +497,9 @@ fn parse_metric<'a, E: ParseError<Span<'a>>>(
         let mut label_map = HashMap::new();
         for label in metric_labels.labels {
             label_map.insert(label.name, label.value);
+        }
+        if let Some(label) = source_label {
+            label_map.insert(label.name.clone(), label.value.clone());
         }
 
         Ok((
@@ -862,12 +868,13 @@ mod test {
     fn parse_metric_family_with_only_metadata() {
         let src =
             "# TYPE foo_seconds gauge\n# UNIT foo_seconds seconds\n# HELP foo_seconds help text\n";
-        let metric_family = final_parser(parse_metric_family::<ErrorTree<Span>>)(src.into())
-            .or_else(|e| {
-                render_error(src, e);
-                Err(())
-            })
-            .unwrap();
+        let metric_family =
+            final_parser({ |it| parse_metric_family::<ErrorTree<Span>>(it, &None) })(src.into())
+                .or_else(|e| {
+                    render_error(src, e);
+                    Err(())
+                })
+                .unwrap();
 
         let expected = MetricFamily {
             name: "foo_seconds".to_string(),
@@ -884,7 +891,7 @@ mod test {
     fn parse_metric_family_with_metric() {
         let src = "# TYPE foo_seconds gauge\nfoo_seconds{label=\"value\"} 150\n# EOF";
         let metric_family = final_parser(terminated(
-            parse_metric_family::<ErrorTree<Span>>,
+            |it| parse_metric_family::<ErrorTree<Span>>(it, &None),
             preceded(multispace0, tag("# EOF")),
         ))(src.into())
         .or_else(|e| {
@@ -914,7 +921,7 @@ mod test {
     fn parse_metric_family_without_metadata() {
         let src = "foo_seconds{label=\"value\"} 150\n# EOF";
         let metric_family = final_parser(terminated(
-            parse_metric_family::<ErrorTree<Span>>,
+            |it| parse_metric_family::<ErrorTree<Span>>(it, &None),
             tag("# EOF"),
         ))(src.into())
         .or_else(|e| {
@@ -941,7 +948,7 @@ mod test {
     fn parse_metric_family_with_multiple_metrics() {
         let src = "# TYPE foo_seconds gauge\nfoo_seconds{label=\"value1\"} 150\nfoo_seconds{label=\"value2\"} 100\n# EOF";
         let metric_family = final_parser(terminated(
-            parse_metric_family::<ErrorTree<Span>>,
+            |it| parse_metric_family::<ErrorTree<Span>>(it, &None),
             tag("# EOF"),
         ))(src.into())
         .or_else(|e| {
@@ -973,9 +980,13 @@ mod test {
     #[test]
     fn parse_gauge_metric() {
         let src = "foo_seconds{label=\"value\"} 99\n# EOF";
-        let (_, (_, metric)) =
-            parse_metric::<ErrorTree<Span>>(src.into(), Some("foo_seconds"), MetricType::Gauge)
-                .unwrap();
+        let (_, (_, metric)) = parse_metric::<ErrorTree<Span>>(
+            src.into(),
+            Some("foo_seconds"),
+            &None,
+            MetricType::Gauge,
+        )
+        .unwrap();
         assert_eq!(
             metric,
             Metric {
@@ -989,9 +1000,13 @@ mod test {
     fn parse_metric_with_multiple_metric_points() {
         let src =
             "foo_seconds{label=\"value\"} 99 123\nfoo_seconds{label=\"value\"} 100 456\n# EOF";
-        let (_, (_, metric)) =
-            parse_metric::<ErrorTree<Span>>(src.into(), Some("foo_seconds"), MetricType::Gauge)
-                .unwrap();
+        let (_, (_, metric)) = parse_metric::<ErrorTree<Span>>(
+            src.into(),
+            Some("foo_seconds"),
+            &None,
+            MetricType::Gauge,
+        )
+        .unwrap();
         assert_eq!(
             metric,
             Metric {
@@ -1014,9 +1029,13 @@ mod test {
     fn parse_counter_with_multiple_metric_points() {
         let src =
             "foo_seconds_total{label=\"value\"} 99 123\nfoo_seconds_total{label=\"value\"} 100 456\n# EOF";
-        let (_, (_, metric)) =
-            parse_metric::<ErrorTree<Span>>(src.into(), Some("foo_seconds"), MetricType::Counter)
-                .unwrap();
+        let (_, (_, metric)) = parse_metric::<ErrorTree<Span>>(
+            src.into(),
+            Some("foo_seconds"),
+            &None,
+            MetricType::Counter,
+        )
+        .unwrap();
         assert_eq!(
             metric,
             Metric {
@@ -1038,9 +1057,13 @@ mod test {
     #[test]
     fn parse_unknown_metric_with_name_test() {
         let src = "foo_seconds{label=\"value\"} 99\n# EOF";
-        let (_, (_, metric)) =
-            parse_metric::<ErrorTree<Span>>(src.into(), Some("foo_seconds"), MetricType::Unknown)
-                .unwrap();
+        let (_, (_, metric)) = parse_metric::<ErrorTree<Span>>(
+            src.into(),
+            Some("foo_seconds"),
+            &None,
+            MetricType::Unknown,
+        )
+        .unwrap();
         assert_eq!(
             metric,
             Metric {
@@ -1054,7 +1077,7 @@ mod test {
     fn parse_unknown_metric_without_name_test() {
         let src = "foo_seconds{label=\"value\"} 99\n# EOF";
         let (_, (name, metric)) =
-            parse_metric::<ErrorTree<Span>>(src.into(), None, MetricType::Unknown).unwrap();
+            parse_metric::<ErrorTree<Span>>(src.into(), None, &None, MetricType::Unknown).unwrap();
         assert_eq!(name, Some("foo_seconds".into()));
         assert_eq!(
             metric,
@@ -1069,7 +1092,8 @@ mod test {
     fn parse_info_metric_test() {
         let src = "foo_info{version=\"1.0\"} 1\n# EOF";
         let (_, (_, metric)) =
-            parse_metric::<ErrorTree<Span>>(src.into(), "foo".into(), MetricType::Info).unwrap();
+            parse_metric::<ErrorTree<Span>>(src.into(), "foo".into(), &None, MetricType::Info)
+                .unwrap();
         assert_eq!(
             metric,
             Metric {
@@ -1082,12 +1106,13 @@ mod test {
     #[test]
     fn parse_metric_set_test() {
         let src = "# TYPE foo_seconds gauge\nfoo_seconds{label=\"value\"} 150\n# TYPE bar_seconds gauge\nbar_seconds{label=\"value\"} 50\n# EOF";
-        let metric_set = final_parser(parse_metric_set::<ErrorTree<Span>>)(src.into())
-            .or_else(|e| {
-                render_error(src, e);
-                Err(())
-            })
-            .unwrap();
+        let metric_set =
+            final_parser({ |i| parse_metric_set::<ErrorTree<Span>>(i, &None) })(src.into())
+                .or_else(|e| {
+                    render_error(src, e);
+                    Err(())
+                })
+                .unwrap();
 
         let expected_1 = MetricFamily {
             name: "foo_seconds".to_string(),
@@ -1130,7 +1155,7 @@ foo_count 17\n\
 foo_sum 324789.3\n\
 foo_created 1520430000.123\n";
         let (_, (name, result)) =
-            parse_metric::<ErrorTree<Span>>(src.into(), Some("foo"), MetricType::Histogram)
+            parse_metric::<ErrorTree<Span>>(src.into(), Some("foo"), &None, MetricType::Histogram)
                 .unwrap();
         assert_eq!(
             result,
@@ -1185,9 +1210,13 @@ foo_bucket{le=\"+Inf\"} 17\n\
 foo_gcount 17\n\
 foo_gsum 324789.3\n\
 foo_created 1520430000.123\n";
-        let (_, (name, result)) =
-            parse_metric::<ErrorTree<Span>>(src.into(), Some("foo"), MetricType::GaugeHistogram)
-                .unwrap();
+        let (_, (name, result)) = parse_metric::<ErrorTree<Span>>(
+            src.into(),
+            Some("foo"),
+            &None,
+            MetricType::GaugeHistogram,
+        )
+        .unwrap();
         assert_eq!(
             result,
             Metric {
@@ -1234,7 +1263,8 @@ foo_created 1520430000.123\n";
     fn parse_stateset_test() {
         let src = "foo{foo=\"a\"} 0\nfoo{foo=\"bb\"} 1\nfoo{foo=\"ccc\"} 0\n";
         let (_, (_, metric)) =
-            parse_metric::<ErrorTree<Span>>(src.into(), Some("foo"), MetricType::StateSet).unwrap();
+            parse_metric::<ErrorTree<Span>>(src.into(), Some("foo"), &None, MetricType::StateSet)
+                .unwrap();
         let mut states = HashMap::new();
         states.insert("a".to_string(), false);
         states.insert("bb".to_string(), true);
@@ -1249,5 +1279,27 @@ foo_created 1520430000.123\n";
                 }]
             }
         )
+    }
+
+    #[test]
+    fn parse_metric_with_source_label() {
+        let src = "foo_seconds{label=\"value\"} 99\n# EOF";
+        let (_, (_, metric)) = parse_metric::<ErrorTree<Span>>(
+            src.into(),
+            Some("foo_seconds"),
+            &Some(Label {
+                name: "metrics_source".into(),
+                value: "test".into(),
+            }),
+            MetricType::Gauge,
+        )
+        .unwrap();
+        assert_eq!(
+            metric,
+            Metric {
+                labels: serde_json::from_str("{\"label\":\"value\",\"metrics_source\":\"test\"}").unwrap(),
+                metric_points: vec![MetricValue::GaugeValue(IntOrFloat::Int(99)).into()]
+            }
+        );
     }
 }
